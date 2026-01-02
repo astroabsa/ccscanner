@@ -7,227 +7,89 @@ from datetime import datetime, timedelta
 import time
 
 # --- 1. APP CONFIGURATION ---
-st.set_page_config(page_title="Absa's Delta India Scanner", layout="wide")
-
-# --- 2. GLOBAL SETTINGS ---
+st.set_page_config(page_title="Absa's Delta India Detective", layout="wide")
 BASE_URL = "https://api.india.delta.exchange"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 
-if "oi_cache" not in st.session_state:
-    st.session_state.oi_cache = {}
+# --- 2. AUTHENTICATION ---
+if "authenticated" not in st.session_state: st.session_state["authenticated"] = True # Auto-login
 
-# --- 3. AUTHENTICATION ---
-def authenticate_user(user_in, pw_in):
-    return True 
+# --- 3. MAIN APP ---
+st.title("🕵️ Delta API Detective: Cracking the Code")
 
-if "authenticated" not in st.session_state:
-    st.session_state["authenticated"] = False
-
-if not st.session_state["authenticated"]:
-    st.title("🔐 Absa's Delta Pro Login")
-    with st.form("login_form"):
-        u = st.text_input("Username")
-        p = st.text_input("Password", type="password")
-        if st.form_submit_button("Log In"):
-            if authenticate_user(u, p):
-                st.session_state["authenticated"] = True
-                st.rerun()
+# Fetch ONE active pair to test on
+st.info("Fetching a valid Product ID to test...")
+try:
+    resp = requests.get(f"{BASE_URL}/v2/tickers", headers=HEADERS)
+    tickers = resp.json().get('result', [])
+    # Find BTCUSDT or similar
+    target = next((t for t in tickers if 'BTC' in t['symbol'] and 'USD' in t['symbol']), None)
+    
+    if not target:
+        st.error("Could not find BTC pair to test.")
+        st.stop()
+        
+    product_id = target['product_id']
+    symbol = target['symbol']
+    st.success(f"Target Acquired: **{symbol}** (ID: {product_id})")
+    
+except Exception as e:
+    st.error(f"Setup failed: {e}")
     st.stop()
 
-# --- 4. MAIN APPLICATION ---
-st.title("🚀 Absa's Delta India Scanner (Extended History)")
-if st.sidebar.button("Log out"):
-    st.session_state["authenticated"] = False
-    st.rerun()
+st.markdown("---")
+st.subheader("🧪 Experiment Results")
 
-# Sidebar Filters
-st.sidebar.header("Filter Settings")
-# Set defaults to 0 to ensure data shows up first!
-rsi_min = st.sidebar.slider("Min RSI (Bull)", 0, 100, 0) 
-rsi_max = st.sidebar.slider("Max RSI (Bear)", 0, 100, 100)
-adx_min = st.sidebar.slider("Min ADX", 0, 50, 0)
+# --- EXPERIMENT 1: Resolution '60' ---
+col1, col2, col3 = st.columns(3)
 
-def get_sentiment(p_chg, oi_chg):
-    if p_chg > 0 and oi_chg > 0: return "Long Buildup 🚀"
-    if p_chg < 0 and oi_chg > 0: return "Short Buildup 📉"
-    if p_chg < 0 and oi_chg < 0: return "Long Unwinding ⚠️"
-    if p_chg > 0 and oi_chg < 0: return "Short Covering 💨"
-    return "Neutral ➖"
-
-# --- HELPER: FETCH TOP PAIRS ---
-def fetch_top_pairs():
+with col1:
+    st.markdown("### Attempt 1: Resolution '60'")
+    params = {'product_id': product_id, 'resolution': '60', 'limit': 50}
     try:
-        resp = requests.get(f"{BASE_URL}/v2/tickers", headers=HEADERS)
-        if resp.status_code != 200: return []
-        
-        tickers = resp.json().get('result', [])
-        valid = [t for t in tickers if 'USD' in t['symbol']]
-        valid.sort(key=lambda x: float(x.get('turnover', 0) or 0), reverse=True)
-        return valid[:30]
+        r = requests.get(f"{BASE_URL}/v2/history/candles", params=params, headers=HEADERS)
+        if r.status_code == 200:
+            count = len(r.json().get('result', []))
+            st.success(f"✅ Success! Got {count} candles.")
+            st.write(r.json().get('result', [])[:2]) # Show sample
+        else:
+            st.error(f"❌ Failed: {r.status_code}")
+            st.code(r.text) # PRINT THE ERROR MESSAGE
     except Exception as e:
-        st.error(f"API Error: {e}")
-        return []
+        st.error(f"Error: {e}")
 
-def render_dashboard(top_pairs):
-    col1, col2, col3 = st.columns([1, 1, 2])
-    def find_pair(name_part):
-        return next((t for t in top_pairs if name_part in t['symbol']), None)
-
-    btc = find_pair('BTC')
-    eth = find_pair('ETH')
-    
-    if btc:
-        p = float(btc.get('close', 0))
-        pct = float(btc.get('mark_change_24h', 0) or 0)
-        if abs(pct) < 1.0 and pct != 0: pct *= 100
-        
-        col1.metric("BTC", f"${p:,.2f}", f"{pct:.2f}%")
-        
-        bias, color = ("SIDEWAYS ↔️", "gray")
-        if pct > 0.5: bias, color = ("BULLISH 🚀", "green")
-        elif pct < -0.5: bias, color = ("BEARISH 📉", "red")
-        
-        col3.markdown(f"""
-            <div style="text-align: center; padding: 10px; border: 1px solid {color}; border-radius: 10px;">
-                <h3 style="margin:0; color: {color};">Market Bias: {bias}</h3>
-            </div>
-        """, unsafe_allow_html=True)
-
-    if eth:
-        p = float(eth.get('close', 0))
-        pct = float(eth.get('mark_change_24h', 0) or 0)
-        if abs(pct) < 1.0 and pct != 0: pct *= 100
-        col2.metric("ETH", f"${p:,.2f}", f"{pct:.2f}%")
-
-@st.fragment(run_every=300)
-def refreshable_data_tables():
-    top_pairs = fetch_top_pairs()
-    
-    if not top_pairs:
-        st.warning("Waiting for data...")
-        return
-
-    render_dashboard(top_pairs)
-    st.markdown("---")
-    
-    bullish, bearish = [], []
-    
-    # Debug info
-    with st.expander("🕵️ Live Debug (First 3 Pairs)", expanded=True):
-        st.caption("We need > 15 candles to generate signals.")
-        debug_cols = st.columns(3)
-    
-    progress_bar = st.progress(0, text="Scanning active pairs...")
-    
-    # --- FIX: EXPANDED TIME WINDOW ---
-    # We ask for 30 DAYS of history to ensure we get enough hourly candles
-    now = datetime.now(pytz.UTC)
-    ts_end = int(now.timestamp())
-    ts_start = int((now - timedelta(days=30)).timestamp()) 
-    
-    for i, tick in enumerate(top_pairs):
-        try:
-            sym = tick['symbol']
-            ltp = float(tick.get('close', 0))
-            
-            raw_pct = float(tick.get('mark_change_24h', 0))
-            p_change = raw_pct if abs(raw_pct) > 1.0 else raw_pct * 100
-            
-            curr_oi = float(tick.get('oi_contracts', 0) or tick.get('open_interest', 0) or 0)
-            prev_oi = st.session_state.oi_cache.get(sym, curr_oi)
-            oi_chg_pct = ((curr_oi - prev_oi) / prev_oi * 100) if prev_oi > 0 else 0
-            st.session_state.oi_cache[sym] = curr_oi
-            
-            # Request History
-            chart_url = f"{BASE_URL}/v2/chart/history?symbol={sym}&resolution=60&from={ts_start}&to={ts_end}"
-            resp = requests.get(chart_url, headers=HEADERS, timeout=3)
-            
-            history = []
-            status_msg = f"Status {resp.status_code}"
-            
-            if resp.status_code == 200:
-                history = resp.json().get('result', [])
-            
-            # Debug Print
-            if i < 3:
-                with debug_cols[i]:
-                    st.info(f"**{sym}**\n\nAPI: {status_msg}\n\nCandles: {len(history)}")
-
-            # --- FIX: LOWERED MINIMUM REQUIREMENT ---
-            # Reduced from 30 to 15 to catch sparse data
-            if history and len(history) > 15:
-                df = pd.DataFrame(history)
-                df = df.rename(columns={'close': 'Close', 'high': 'High', 'low': 'Low', 'open': 'Open'})
-                
-                df['Close'] = df['Close'].astype(float)
-                df['High'] = df['High'].astype(float)
-                df['Low'] = df['Low'].astype(float)
-                
-                df['RSI'] = ta.rsi(df['Close'], length=14)
-                adx_df = ta.adx(df['High'], df['Low'], df['Close'], length=14)
-                df['EMA_5'] = ta.ema(df['Close'], length=5)
-                
-                curr_rsi = df['RSI'].iloc[-1]
-                curr_adx = adx_df['ADX_14'].iloc[-1]
-                ema_5 = df['EMA_5'].iloc[-1]
-                
-                momentum_pct = round(((ltp - ema_5) / ema_5) * 100, 2)
-                sentiment = get_sentiment(p_change, oi_chg_pct)
-                
-                tv_url = f"https://india.delta.exchange/app/futures/trade/{sym}"
-                
-                row = {
-                    "Symbol": tv_url,
-                    "LTP": ltp,
-                    "Mom %": momentum_pct,
-                    "24h %": round(p_change, 2),
-                    "RSI": round(curr_rsi, 1),
-                    "ADX": round(curr_adx, 1),
-                    "Sentiment": sentiment
-                }
-                
-                # Check Filters (Using Sidebar Values)
-                if p_change > 0:
-                    if curr_rsi > rsi_min and curr_adx > adx_min:
-                        bullish.append(row)
-                elif p_change < 0:
-                    if curr_rsi < rsi_max and curr_adx > adx_min:
-                        bearish.append(row)
-                        
-            time.sleep(0.02)
-            progress_bar.progress((i + 1) / len(top_pairs))
-            
-        except Exception:
-            continue
-            
-    progress_bar.empty()
-    
-    column_config = {
-        "Symbol": st.column_config.LinkColumn("Pair", display_text="^(.*)$"),
-        "LTP": st.column_config.NumberColumn("Price", format="$%.4f")
-    }
-    
-    c1, c2 = st.columns(2)
-    with c1:
-        st.success(f"🟢 ACTIVE BULLS")
-        if bullish:
-            st.dataframe(pd.DataFrame(bullish).sort_values(by="Mom %", ascending=False).head(10), 
-                         use_container_width=True, hide_index=True, column_config=column_config)
+# --- EXPERIMENT 2: Resolution '1h' ---
+with col2:
+    st.markdown("### Attempt 2: Resolution '1h'")
+    params = {'product_id': product_id, 'resolution': '1h', 'limit': 50}
+    try:
+        r = requests.get(f"{BASE_URL}/v2/history/candles", params=params, headers=HEADERS)
+        if r.status_code == 200:
+            count = len(r.json().get('result', []))
+            st.success(f"✅ Success! Got {count} candles.")
         else:
-            st.info("No bullish action matching filters.")
-            
-    with c2:
-        st.error(f"🔴 ACTIVE BEARS")
-        if bearish:
-            st.dataframe(pd.DataFrame(bearish).sort_values(by="Mom %", ascending=True).head(10), 
-                         use_container_width=True, hide_index=True, column_config=column_config)
+            st.error(f"❌ Failed: {r.status_code}")
+            st.code(r.text) # PRINT THE ERROR MESSAGE
+    except Exception as e:
+        st.error(f"Error: {e}")
+
+# --- EXPERIMENT 3: Chart Endpoint (Fallback) ---
+with col3:
+    st.markdown("### Attempt 3: Chart API (1h)")
+    # Calculate timestamps
+    to_ts = int(time.time())
+    from_ts = to_ts - (30 * 24 * 60 * 60) # 30 days
+    url = f"{BASE_URL}/v2/chart/history?symbol={symbol}&resolution=60&from={from_ts}&to={to_ts}"
+    try:
+        r = requests.get(url, headers=HEADERS)
+        if r.status_code == 200:
+            data = r.json().get('result', [])
+            count = len(data)
+            st.warning(f"⚠️ Status 200 but got {count} candles.")
+            st.write(f"First candle time: {data[0]['time'] if data else 'None'}")
         else:
-            st.info("No bearish action matching filters.")
-
-    ist_time = datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S')
-    st.write(f"🕒 **Last Data Sync:** {ist_time} IST")
-    st.markdown("<div style='text-align: center; color: grey;'>Powered by : i-Tech World</div>", unsafe_allow_html=True)
-
-refreshable_data_tables()
+            st.error(f"❌ Failed: {r.status_code}")
+    except Exception as e:
+        st.error(f"Error: {e}")
