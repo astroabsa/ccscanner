@@ -24,7 +24,21 @@ if "oi_cache" not in st.session_state:
 
 # --- 3. AUTHENTICATION ---
 def authenticate_user(user_in, pw_in):
-    return True 
+    try:
+        # REPLACE THIS with your "Publish to web" CSV link
+        csv_url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSEan21a9IVnkdmTFP2Q9O_ILI3waF52lFWQ5RTDtXDZ5MI4_yTQgFYcCXN5HxgkCxuESi5Dwe9iROB/pub?gid=0&single=true&output=csv"
+        
+        # Bypass login for testing (Remove this line to enforce login)
+        return True 
+        
+        df = pd.read_csv(csv_url)
+        df['username'] = df['username'].astype(str).str.strip().str.lower()
+        df['password'] = df['password'].astype(str).str.strip()
+        match = df[(df['username'] == str(user_in).strip().lower()) & 
+                   (df['password'] == str(pw_in).strip())]
+        return not match.empty
+    except Exception:
+        return True
 
 if "authenticated" not in st.session_state:
     st.session_state["authenticated"] = False
