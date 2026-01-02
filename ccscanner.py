@@ -1,5 +1,5 @@
 import streamlit as st
-from delta_rest_client import DeltaRestClient
+import requests  # Using standard requests instead of the wrapper
 import pandas as pd
 import pandas_ta as ta
 import pytz
@@ -10,6 +10,7 @@ import time
 st.set_page_config(page_title="Absa's Delta India Scanner", layout="wide")
 
 # --- 2. GLOBAL SETTINGS ---
+# Delta India Symbols 
 CRYPTO_PAIRS = [
     'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 
     'DOGEUSDT', 'ADAUSDT', 'AVAXUSDT', 'LINKUSDT', 'DOTUSDT', 
@@ -65,17 +66,25 @@ def get_sentiment(p_chg, oi_chg):
     if p_chg > 0 and oi_chg < 0: return "Short Covering 💨"
     return "Neutral ➖"
 
-# --- HELPER: FETCH DATA DIRECTLY ---
-def fetch_market_data(client):
+# --- HELPER: DIRECT API FETCHING ---
+def fetch_market_data():
+    base_url = "https://api.india.delta.exchange"
     try:
         # 1. Get ALL Products (for IDs)
-        # We use client.request because 'get_products' doesn't exist in some versions
-        products = client.request("GET", "/v2/products")
+        # Verify if response is JSON, if not, handle gracefully
+        resp_prod = requests.get(f"{base_url}/v2/products")
+        if resp_prod.status_code != 200:
+            return {}, {}
+        
+        products = resp_prod.json().get('result', [])
         product_map = {p['symbol']: p for p in products}
         
         # 2. Get ALL Tickers (for Price/OI)
-        # Using direct request to /v2/tickers
-        tickers = client.request("GET", "/v2/tickers")
+        resp_tick = requests.get(f"{base_url}/v2/tickers")
+        if resp_tick.status_code != 200:
+            return {}, {}
+            
+        tickers = resp_tick.json().get('result', [])
         ticker_map = {t['symbol']: t for t in tickers}
 
         return product_map, ticker_map
@@ -90,11 +99,9 @@ def render_dashboard(ticker_map):
     eth = ticker_map.get('ETHUSDT', {})
     
     if btc:
-        # Delta tickers return close price directly
         btc_price = float(btc.get('close', 0))
-        # Calculate % change manually if needed, or use 'percent_change_24h' if available
-        # Delta usually gives decimal 0.05 for 5%. We multiply by 100.
-        btc_pct = float(btc.get('percent_change_24h', 0)) * 100
+        # Delta gives decimal (e.g., 0.05 for 5%)
+        btc_pct = float(btc.get('percent_change_24h', 0)) * 100 
         col1.metric("BTCUSDT", f"${btc_price:,.2f}", f"{btc_pct:.2f}%")
         
         bias = "SIDEWAYS ↔️"
@@ -115,26 +122,21 @@ def render_dashboard(ticker_map):
 
 @st.fragment(run_every=300)
 def refreshable_data_tables():
-    # 1. INITIALIZE CLIENT CORRECTLY [Fixed Initialization]
-    delta_client = DeltaRestClient(
-        base_url='https://api.india.delta.exchange',
-        api_key='3C0Ms8rQBuVGbCOi7ZDDUbnE2ur1P5',
-        api_secret='v0GeBUZXG9hdKEm7EG3rL4EzcKvndjD0MSgOyhv6AxywY8ogHUx91zyd2a29'
-    )
-    
-    # 2. FETCH DATA
-    product_map, ticker_map = fetch_market_data(delta_client)
+    # 1. FETCH DATA (Direct Requests)
+    product_map, ticker_map = fetch_market_data()
     
     if not product_map or not ticker_map:
         st.warning("Waiting for Delta Exchange data...")
         return
 
-    # 3. SHOW DASHBOARD
+    # 2. SHOW DASHBOARD
     render_dashboard(ticker_map)
     st.markdown("---")
 
     bullish, bearish = [], []
     progress_bar = st.progress(0, text="Scanning Delta India Markets...")
+    
+    base_url = "https://api.india.delta.exchange"
     
     for i, sym in enumerate(CRYPTO_PAIRS):
         try:
@@ -159,9 +161,11 @@ def refreshable_data_tables():
             st.session_state.oi_cache[sym] = curr_oi
             
             # History (Candles)
-            # Using client.request directly to be safe
-            params = {'product_id': pid, 'resolution': 60, 'limit': 60}
-            history = delta_client.request("GET", "/v2/history/candles", params)
+            # Direct request to candles endpoint
+            hist_url = f"{base_url}/v2/history/candles?product_id={pid}&resolution=60&limit=60"
+            hist_resp = requests.get(hist_url).json()
+            
+            history = hist_resp.get('result', [])
             
             if history and len(history) > 30:
                 df = pd.DataFrame(history)
