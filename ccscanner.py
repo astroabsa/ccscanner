@@ -80,7 +80,7 @@ def fetch_tickers():
     return []
 
 # --- 6. FRAGMENT A: FAST DASHBOARD (1 Second Refresh) ---
-@st.fragment(run_every=1)
+@st.fragment(run_every=30)
 def live_dashboard():
     # Fetch just the tickers for price updates
     tickers = fetch_tickers()
