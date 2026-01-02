@@ -20,8 +20,7 @@ if "oi_cache" not in st.session_state:
 
 # --- 3. AUTHENTICATION ---
 def authenticate_user(user_in, pw_in):
-    # Bypass for testing
-    return True 
+    return True # Bypass for testing
 
 if "authenticated" not in st.session_state:
     st.session_state["authenticated"] = False
@@ -35,21 +34,19 @@ if not st.session_state["authenticated"]:
             if authenticate_user(u, p):
                 st.session_state["authenticated"] = True
                 st.rerun()
-            else:
-                st.error("Invalid credentials.")
     st.stop()
 
 # --- 4. MAIN APPLICATION ---
-st.title("🚀 Absa's Delta India Scanner")
+st.title("🚀 Absa's Delta India Scanner (Diagnostic Mode)")
 if st.sidebar.button("Log out"):
     st.session_state["authenticated"] = False
     st.rerun()
 
-# Sidebar Filters (Adjustable)
+# Sidebar Filters
 st.sidebar.header("Filter Settings")
-rsi_min = st.sidebar.slider("Min RSI (Bull)", 0, 100, 55)
-rsi_max = st.sidebar.slider("Max RSI (Bear)", 0, 100, 45)
-adx_min = st.sidebar.slider("Min ADX", 0, 50, 15)
+rsi_min = st.sidebar.slider("Min RSI (Bull)", 0, 100, 50)
+rsi_max = st.sidebar.slider("Max RSI (Bear)", 0, 100, 50)
+adx_min = st.sidebar.slider("Min ADX", 0, 50, 10)
 
 def get_sentiment(p_chg, oi_chg):
     if p_chg > 0 and oi_chg > 0: return "Long Buildup 🚀"
@@ -58,33 +55,25 @@ def get_sentiment(p_chg, oi_chg):
     if p_chg > 0 and oi_chg < 0: return "Short Covering 💨"
     return "Neutral ➖"
 
-# --- HELPER: FETCH DATA (Simplified) ---
+# --- HELPER: FETCH TOP PAIRS ---
 def fetch_top_pairs():
     try:
-        # Get ALL Tickers
         resp = requests.get(f"{BASE_URL}/v2/tickers", headers=HEADERS)
-        if resp.status_code != 200: return []
+        if resp.status_code != 200: 
+            st.error(f"Ticker API Failed: {resp.status_code}")
+            return []
         
         tickers = resp.json().get('result', [])
-        
-        # Filter: Must contain 'USD' (covers USD and USDT)
-        # AND must have a valid product_id
         valid = [t for t in tickers if 'USD' in t['symbol'] and t.get('product_id')]
-        
-        # Sort by Turnover (Volume)
+        # Sort by Turnover
         valid.sort(key=lambda x: float(x.get('turnover', 0) or 0), reverse=True)
-        
-        # Return Top 30
         return valid[:30]
-        
     except Exception as e:
         st.error(f"API Error: {e}")
         return []
 
 def render_dashboard(top_pairs):
     col1, col2, col3 = st.columns([1, 1, 2])
-    
-    # Helper to find symbol in list
     def find_pair(name_part):
         return next((t for t in top_pairs if name_part in t['symbol']), None)
 
@@ -93,11 +82,10 @@ def render_dashboard(top_pairs):
     
     if btc:
         p = float(btc.get('close', 0))
-        # Use mark_change_24h if percent_change is missing/weird
-        pct = float(btc.get('mark_change_24h', 0) or btc.get('percent_change_24h', 0) or 0)
-        # Fix decimal vs percent issue
+        pct = float(btc.get('mark_change_24h', 0) or 0)
+        # Auto-scale decimal percent
         if abs(pct) < 1.0 and pct != 0: pct *= 100
-            
+        
         col1.metric("BTC", f"${p:,.2f}", f"{pct:.2f}%")
         
         bias, color = ("SIDEWAYS ↔️", "gray")
@@ -118,88 +106,111 @@ def render_dashboard(top_pairs):
 
 @st.fragment(run_every=300)
 def refreshable_data_tables():
-    # 1. FETCH TOP PAIRS
     top_pairs = fetch_top_pairs()
     
     if not top_pairs:
         st.warning("Waiting for data...")
         return
 
-    # 2. DASHBOARD
     render_dashboard(top_pairs)
     st.markdown("---")
     
     bullish, bearish = [], []
+    
+    # --- DEBUG SECTION ---
+    with st.expander("🕵️ Live Debug Report (First 3 Pairs)", expanded=True):
+        st.write("Checking API connectivity for history...")
+        debug_cols = st.columns(3)
+    
     progress_bar = st.progress(0, text="Scanning active pairs...")
     
     for i, tick in enumerate(top_pairs):
         try:
             sym = tick['symbol']
-            pid = tick['product_id'] # DIRECT ACCESS
+            pid = tick['product_id']
             ltp = float(tick.get('close', 0))
             
-            # % Change
             raw_pct = float(tick.get('mark_change_24h', 0))
             p_change = raw_pct if abs(raw_pct) > 1.0 else raw_pct * 100
             
-            # OI
             curr_oi = float(tick.get('oi_contracts', 0) or tick.get('open_interest', 0) or 0)
-            
-            # OI Cache
             prev_oi = st.session_state.oi_cache.get(sym, curr_oi)
             oi_chg_pct = ((curr_oi - prev_oi) / prev_oi * 100) if prev_oi > 0 else 0
             st.session_state.oi_cache[sym] = curr_oi
             
-            # History Fetch
+            # --- HISTORY FETCH (Robust Mode) ---
+            # Try 'resolution=60' (minutes) first
             hist_url = f"{BASE_URL}/v2/history/candles?product_id={pid}&resolution=60&limit=60"
-            resp = requests.get(hist_url, headers=HEADERS, timeout=3)
+            resp = requests.get(hist_url, headers=HEADERS, timeout=4)
+            
+            history = []
+            status_msg = f"Status {resp.status_code}"
             
             if resp.status_code == 200:
                 history = resp.json().get('result', [])
-                if history and len(history) > 30:
-                    df = pd.DataFrame(history)
-                    df = df.rename(columns={'close': 'Close', 'high': 'High', 'low': 'Low'})
-                    df['Close'] = df['Close'].astype(float)
-                    df['High'] = df['High'].astype(float)
-                    df['Low'] = df['Low'].astype(float)
-                    
-                    # Indicators
-                    df['RSI'] = ta.rsi(df['Close'], length=14)
-                    adx_df = ta.adx(df['High'], df['Low'], df['Close'], length=14)
-                    df['EMA_5'] = ta.ema(df['Close'], length=5)
-                    
-                    curr_rsi = df['RSI'].iloc[-1]
-                    curr_adx = adx_df['ADX_14'].iloc[-1]
-                    ema_5 = df['EMA_5'].iloc[-1]
-                    
-                    momentum_pct = round(((ltp - ema_5) / ema_5) * 100, 2)
-                    sentiment = get_sentiment(p_change, oi_chg_pct)
-                    
-                    tv_url = f"https://india.delta.exchange/app/futures/trade/{sym}"
-                    
-                    row = {
-                        "Symbol": tv_url,
-                        "LTP": ltp,
-                        "Mom %": momentum_pct,
-                        "24h %": round(p_change, 2),
-                        "RSI": round(curr_rsi, 1),
-                        "ADX": round(curr_adx, 1),
-                        "Sentiment": sentiment
-                    }
-                    
-                    # Logic using SIDEBAR SLIDERS
-                    if p_change > 0 and curr_rsi > rsi_min and curr_adx > adx_min:
+            else:
+                # Fallback: Try '1h' if '60' failed
+                hist_url_fb = f"{BASE_URL}/v2/history/candles?product_id={pid}&resolution=1h&limit=60"
+                resp = requests.get(hist_url_fb, headers=HEADERS, timeout=4)
+                if resp.status_code == 200:
+                    history = resp.json().get('result', [])
+                    status_msg = "Status 200 (Fallback 1h)"
+            
+            # --- DEBUG PRINT FOR FIRST 3 ITEMS ---
+            if i < 3:
+                with debug_cols[i]:
+                    st.info(f"**{sym}**\n\nAPI: {status_msg}\n\nCandles: {len(history)}")
+
+            if history and len(history) > 30:
+                df = pd.DataFrame(history)
+                # Normalize Columns (handle lowercase or uppercase)
+                df.columns = [c.lower() for c in df.columns]
+                df = df.rename(columns={'close': 'Close', 'high': 'High', 'low': 'Low'})
+                
+                df['Close'] = df['Close'].astype(float)
+                df['High'] = df['High'].astype(float)
+                df['Low'] = df['Low'].astype(float)
+                
+                df['RSI'] = ta.rsi(df['Close'], length=14)
+                adx_df = ta.adx(df['High'], df['Low'], df['Close'], length=14)
+                df['EMA_5'] = ta.ema(df['Close'], length=5)
+                
+                curr_rsi = df['RSI'].iloc[-1]
+                curr_adx = adx_df['ADX_14'].iloc[-1]
+                ema_5 = df['EMA_5'].iloc[-1]
+                
+                momentum_pct = round(((ltp - ema_5) / ema_5) * 100, 2)
+                sentiment = get_sentiment(p_change, oi_chg_pct)
+                
+                tv_url = f"https://india.delta.exchange/app/futures/trade/{sym}"
+                
+                row = {
+                    "Symbol": tv_url,
+                    "LTP": ltp,
+                    "Mom %": momentum_pct,
+                    "24h %": round(p_change, 2),
+                    "RSI": round(curr_rsi, 1),
+                    "ADX": round(curr_adx, 1),
+                    "Sentiment": sentiment
+                }
+                
+                # Check Filters
+                if p_change > 0:
+                    if curr_rsi > rsi_min and curr_adx > adx_min:
                         bullish.append(row)
-                    elif p_change < 0 and curr_rsi < rsi_max and curr_adx > adx_min:
+                elif p_change < 0:
+                    if curr_rsi < rsi_max and curr_adx > adx_min:
                         bearish.append(row)
                         
+            # Polite Delay
+            time.sleep(0.05)
             progress_bar.progress((i + 1) / len(top_pairs))
+            
         except Exception:
             continue
             
     progress_bar.empty()
     
-    # Display Tables
     column_config = {
         "Symbol": st.column_config.LinkColumn("Pair", display_text="^(.*)$"),
         "LTP": st.column_config.NumberColumn("Price", format="$%.4f")
