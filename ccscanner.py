@@ -35,16 +35,16 @@ if not st.session_state["authenticated"]:
     st.stop()
 
 # --- 3. MAIN APP ---
-st.title("🚀 Absa's Delta India Scanner (Time-Bound)")
+st.title("🚀 Absa's Delta India Scanner (Final Fix)")
 if st.sidebar.button("Log out"):
     st.session_state["authenticated"] = False
     st.rerun()
 
 # Sidebar Filters
 st.sidebar.header("Filter Settings")
-rsi_min = st.sidebar.slider("Min RSI (Bull)", 0, 100, 0)
-rsi_max = st.sidebar.slider("Max RSI (Bear)", 0, 100, 100)
-adx_min = st.sidebar.slider("Min ADX", 0, 50, 0)
+rsi_min = st.sidebar.slider("Min RSI (Bull)", 0, 100, 50)
+rsi_max = st.sidebar.slider("Max RSI (Bear)", 0, 100, 50)
+adx_min = st.sidebar.slider("Min ADX", 0, 50, 15)
 
 def get_sentiment(p_chg, oi_chg):
     if p_chg > 0 and oi_chg > 0: return "Long Buildup 🚀"
@@ -59,7 +59,9 @@ def fetch_top_pairs():
         resp = requests.get(f"{BASE_URL}/v2/tickers", headers=HEADERS)
         if resp.status_code != 200: return []
         tickers = resp.json().get('result', [])
+        # Strict Filter: Must have 'USD' in symbol
         valid = [t for t in tickers if 'USD' in t['symbol']]
+        # Sort by Turnover
         valid.sort(key=lambda x: float(x.get('turnover', 0) or 0), reverse=True)
         return valid[:30]
     except Exception:
@@ -77,6 +79,7 @@ def refreshable_data_tables():
     def find_pair(name): return next((t for t in top_pairs if name in t['symbol']), None)
     btc = find_pair('BTC')
     eth = find_pair('ETH')
+    
     if btc:
         p = float(btc.get('close', 0))
         pct = float(btc.get('mark_change_24h', 0) or 0)
@@ -97,9 +100,7 @@ def refreshable_data_tables():
     bullish, bearish = [], []
     progress_bar = st.progress(0, text="Scanning active pairs...")
     
-    # --- FIX: EXACT TIMESTAMPS FOR 'HISTORY/CANDLES' ---
-    # The API requires 'start' and 'end' (Unix Timestamp)
-    # We want last 5 days (approx 120 hourly candles)
+    # Time Range: Last 5 Days
     now = datetime.now(pytz.UTC)
     end_ts = int(now.timestamp())
     start_ts = int((now - timedelta(days=5)).timestamp())
@@ -111,7 +112,7 @@ def refreshable_data_tables():
     for i, tick in enumerate(top_pairs):
         try:
             sym = tick['symbol']
-            pid = tick['product_id']
+            # We DON'T need product_id anymore for this endpoint!
             ltp = float(tick.get('close', 0))
             raw_pct = float(tick.get('mark_change_24h', 0))
             p_change = raw_pct if abs(raw_pct) > 1.0 else raw_pct * 100
@@ -121,12 +122,12 @@ def refreshable_data_tables():
             oi_chg_pct = ((curr_oi - prev_oi) / prev_oi * 100) if prev_oi > 0 else 0
             st.session_state.oi_cache[sym] = curr_oi
             
-            # --- API CALL: HISTORY/CANDLES ---
-            # Correct Params: resolution="60" (string), start=int, end=int
+            # --- API CALL: HISTORY/CANDLES (CORRECTED) ---
+            # KEY FIX: Use 'symbol' instead of 'product_id'
             url = f"{BASE_URL}/v2/history/candles"
             params = {
-                'product_id': pid,
-                'resolution': '60', 
+                'symbol': sym,         # <--- THE FIX
+                'resolution': '1h',    # Standard string format
                 'start': start_ts,
                 'end': end_ts
             }
