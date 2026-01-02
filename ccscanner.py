@@ -10,7 +10,6 @@ import time
 st.set_page_config(page_title="Absa's Delta India Scanner", layout="wide")
 
 # --- 2. GLOBAL SETTINGS ---
-# Delta India Symbols 
 CRYPTO_PAIRS = [
     'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 
     'DOGEUSDT', 'ADAUSDT', 'AVAXUSDT', 'LINKUSDT', 'DOTUSDT', 
@@ -66,100 +65,92 @@ def get_sentiment(p_chg, oi_chg):
     if p_chg > 0 and oi_chg < 0: return "Short Covering 💨"
     return "Neutral ➖"
 
-# --- HELPER: FETCH DATA ---
-def fetch_market_dashboard(client):
-    col1, col2, col3 = st.columns([1, 1, 2])
-    
-    # We will fetch 'products' to get the list of ALL pairs and their IDs
-    # This acts as our "master map"
+# --- HELPER: FETCH DATA DIRECTLY ---
+def fetch_market_data(client):
     try:
-        products = client.get_products()
-        # Create a dictionary: {'BTCUSDT': {'id': 123, 'symbol': 'BTCUSDT'}, ...}
+        # 1. Get ALL Products (for IDs)
+        # We use client.request because 'get_products' doesn't exist in some versions
+        products = client.request("GET", "/v2/products")
         product_map = {p['symbol']: p for p in products}
         
-        # Now fetch Price for Dashboard
-        # Note: We must fetch tickers individually as there is no "get_all_tickers" method
-        btc_ticker = client.get_ticker('BTCUSDT')
-        eth_ticker = client.get_ticker('ETHUSDT')
-        
-        # Parse BTC
-        btc_price = float(btc_ticker['close'])
-        # Delta gives 24h change as a price difference, not percent directly sometimes, 
-        # but usually 'percent_change_24h' exists in the product or ticker response.
-        # Let's calculate manually to be safe: ((Close - Open) / Open) * 100
-        btc_open = float(btc_ticker['open'])
-        btc_pct = ((btc_price - btc_open) / btc_open) * 100
-        
-        # Parse ETH
-        eth_price = float(eth_ticker['close'])
-        eth_open = float(eth_ticker['open'])
-        eth_pct = ((eth_price - eth_open) / eth_open) * 100
+        # 2. Get ALL Tickers (for Price/OI)
+        # Using direct request to /v2/tickers
+        tickers = client.request("GET", "/v2/tickers")
+        ticker_map = {t['symbol']: t for t in tickers}
 
-        with col1:
-            st.metric("BTCUSDT", f"${btc_price:,.2f}", f"{btc_pct:.2f}%")
-        with col2:
-            st.metric("ETHUSDT", f"${eth_price:,.2f}", f"{eth_pct:.2f}%")
-        with col3:
-            bias = "SIDEWAYS ↔️"
-            color = "gray"
-            if btc_pct > 0.5: 
-                bias = "BULLISH 🚀"
-                color = "green"
-            elif btc_pct < -0.5: 
-                bias = "BEARISH 📉"
-                color = "red"
-            st.markdown(f"""
-                <div style="text-align: center; padding: 10px; border: 1px solid {color}; border-radius: 10px;">
-                    <h3 style="margin:0; color: {color};">Market Bias: {bias}</h3>
-                </div>
-            """, unsafe_allow_html=True)
-            
-        return product_map
-        
+        return product_map, ticker_map
     except Exception as e:
-        st.error(f"API Connection Error: {e}")
-        return {}
+        st.error(f"API Error: {e}")
+        return {}, {}
+
+def render_dashboard(ticker_map):
+    col1, col2, col3 = st.columns([1, 1, 2])
+    
+    btc = ticker_map.get('BTCUSDT', {})
+    eth = ticker_map.get('ETHUSDT', {})
+    
+    if btc:
+        # Delta tickers return close price directly
+        btc_price = float(btc.get('close', 0))
+        # Calculate % change manually if needed, or use 'percent_change_24h' if available
+        # Delta usually gives decimal 0.05 for 5%. We multiply by 100.
+        btc_pct = float(btc.get('percent_change_24h', 0)) * 100
+        col1.metric("BTCUSDT", f"${btc_price:,.2f}", f"{btc_pct:.2f}%")
+        
+        bias = "SIDEWAYS ↔️"
+        color = "gray"
+        if btc_pct > 0.5: bias, color = "BULLISH 🚀", "green"
+        elif btc_pct < -0.5: bias, color = "BEARISH 📉", "red"
+        
+        col3.markdown(f"""
+            <div style="text-align: center; padding: 10px; border: 1px solid {color}; border-radius: 10px;">
+                <h3 style="margin:0; color: {color};">Market Bias: {bias}</h3>
+            </div>
+        """, unsafe_allow_html=True)
+
+    if eth:
+        eth_price = float(eth.get('close', 0))
+        eth_pct = float(eth.get('percent_change_24h', 0)) * 100
+        col2.metric("ETHUSDT", f"${eth_price:,.2f}", f"{eth_pct:.2f}%")
 
 @st.fragment(run_every=300)
 def refreshable_data_tables():
-    # 1. INITIALIZE CLIENT CORRECTLY
-    # Base URL for India is crucial. API keys can be empty for public data.
+    # 1. INITIALIZE CLIENT CORRECTLY [Fixed Initialization]
     delta_client = DeltaRestClient(
         base_url='https://api.india.delta.exchange',
         api_key='3C0Ms8rQBuVGbCOi7ZDDUbnE2ur1P5',
         api_secret='v0GeBUZXG9hdKEm7EG3rL4EzcKvndjD0MSgOyhv6AxywY8ogHUx91zyd2a29'
     )
     
-    # 2. GET PRODUCT MAP (IDs)
-    product_map = fetch_market_dashboard(delta_client)
-    st.markdown("---")
+    # 2. FETCH DATA
+    product_map, ticker_map = fetch_market_data(delta_client)
     
-    if not product_map:
-        st.stop()
+    if not product_map or not ticker_map:
+        st.warning("Waiting for Delta Exchange data...")
+        return
+
+    # 3. SHOW DASHBOARD
+    render_dashboard(ticker_map)
+    st.markdown("---")
 
     bullish, bearish = [], []
-    progress_bar = st.progress(0, text="Fetching Delta Data...")
+    progress_bar = st.progress(0, text="Scanning Delta India Markets...")
     
     for i, sym in enumerate(CRYPTO_PAIRS):
         try:
-            if sym not in product_map: continue
+            if sym not in product_map or sym not in ticker_map: continue
             
-            # Get Product ID (Required for History)
-            pid = product_map[sym]['id']
+            # Product Details
+            prod = product_map[sym]
+            pid = prod['id'] # Needed for history
             
-            # Get Live Ticker (Price, OI)
-            ticker = delta_client.get_ticker(sym)
-            ltp = float(ticker['close'])
+            # Ticker Details
+            tick = ticker_map[sym]
+            ltp = float(tick['close'])
+            p_change = float(tick.get('percent_change_24h', 0)) * 100
+            curr_oi = float(tick.get('open_interest', 0)) # Real OI
             
-            # Calculate 24h Change %
-            open_24h = float(ticker['open'])
-            p_change = ((ltp - open_24h) / open_24h) * 100
-            
-            # Open Interest
-            # Delta Ticker response usually has 'open_interest' (contracts)
-            # We use 'size' or value depending on what they return, usually pure number of contracts
-            curr_oi = float(ticker.get('open_interest', 0))
-            
+            # OI Change Logic
             if sym in st.session_state.oi_cache:
                 prev_oi = st.session_state.oi_cache[sym]
                 oi_chg_pct = ((curr_oi - prev_oi) / prev_oi) * 100 if prev_oi > 0 else 0
@@ -167,27 +158,20 @@ def refreshable_data_tables():
                 oi_chg_pct = 0
             st.session_state.oi_cache[sym] = curr_oi
             
-            # Get History (Candles)
-            # Resolution 60 = 1 Hour
-            # We use the generic 'request' method to hit the candles endpoint safely
-            # Endpoint: /v2/history/candles
-            params = {
-                'product_id': pid,
-                'resolution': 60,
-                'limit': 60
-            }
-            history_resp = delta_client.request("GET", "/v2/history/candles", params)
+            # History (Candles)
+            # Using client.request directly to be safe
+            params = {'product_id': pid, 'resolution': 60, 'limit': 60}
+            history = delta_client.request("GET", "/v2/history/candles", params)
             
-            if history_resp and len(history_resp) > 30:
-                # API returns list of dicts: [{'t':..., 'o':..., 'h':..., 'l':..., 'c':...}]
-                df = pd.DataFrame(history_resp)
-                # Ensure columns are float
+            if history and len(history) > 30:
+                df = pd.DataFrame(history)
+                # Delta returns: t, o, h, l, c, v (lowercase)
                 df = df.rename(columns={'close': 'Close', 'high': 'High', 'low': 'Low'})
                 df['Close'] = df['Close'].astype(float)
                 df['High'] = df['High'].astype(float)
                 df['Low'] = df['Low'].astype(float)
                 
-                # Indicators
+                # Technicals
                 df['RSI'] = ta.rsi(df['Close'], length=14)
                 adx_df = ta.adx(df['High'], df['Low'], df['Close'], length=14)
                 df['EMA_5'] = ta.ema(df['Close'], length=5)
@@ -199,6 +183,7 @@ def refreshable_data_tables():
                 momentum_pct = round(((ltp - ema_5) / ema_5) * 100, 2)
                 sentiment = get_sentiment(p_change, oi_chg_pct)
                 
+                # Deep Link
                 tv_url = f"https://india.delta.exchange/app/futures/trade/{sym}"
                 
                 row = {
@@ -222,33 +207,31 @@ def refreshable_data_tables():
             
     progress_bar.empty()
     
+    # Render Tables
     column_config = {
-        "Symbol": st.column_config.LinkColumn(
-            "Pair (Click to Trade)", 
-            display_text="(.*)USDT"
-        ),
-        "LTP": st.column_config.NumberColumn("Price ($)", format="$%.4f")
+        "Symbol": st.column_config.LinkColumn("Pair", display_text="(.*)USDT"),
+        "LTP": st.column_config.NumberColumn("Price", format="$%.4f")
     }
     
-    col1, col2 = st.columns(2)
-    with col1:
-        st.success("🟢 ACTIVE BULLS (Accelerating Up)")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.success("🟢 ACTIVE BULLS")
         if bullish:
             st.dataframe(pd.DataFrame(bullish).sort_values(by="Mom %", ascending=False).head(10), 
                          use_container_width=True, hide_index=True, column_config=column_config)
         else:
-            st.info("No bullish breakouts detected.")
-
-    with col2:
-        st.error("🔴 ACTIVE BEARS (Accelerating Down)")
+            st.info("No bullish action.")
+            
+    with c2:
+        st.error("🔴 ACTIVE BEARS")
         if bearish:
             st.dataframe(pd.DataFrame(bearish).sort_values(by="Mom %", ascending=True).head(10), 
                          use_container_width=True, hide_index=True, column_config=column_config)
         else:
-            st.info("No bearish breakdowns detected.")
+            st.info("No bearish action.")
 
     ist_time = datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S')
-    st.write(f"🕒 **Last Data Sync:** {ist_time} IST (Auto-refreshing in 5 mins)")
-    st.markdown("<div style='text-align: center; color: grey; padding-top: 20px;'>Powered by : i-Tech World</div>", unsafe_allow_html=True)
+    st.write(f"🕒 **Last Data Sync:** {ist_time} IST")
+    st.markdown("<div style='text-align: center; color: grey;'>Powered by : i-Tech World</div>", unsafe_allow_html=True)
 
 refreshable_data_tables()
