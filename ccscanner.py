@@ -15,8 +15,6 @@ HEADERS = {
 
 if "oi_cache" not in st.session_state:
     st.session_state.oi_cache = {}
-if "best_resolution" not in st.session_state:
-    st.session_state.best_resolution = None # Will auto-detect
 
 # --- 2. AUTHENTICATION ---
 def authenticate_user(user_in, pw_in):
@@ -37,14 +35,13 @@ if not st.session_state["authenticated"]:
     st.stop()
 
 # --- 3. MAIN APP ---
-st.title("🚀 Absa's Delta India Scanner (Smart-Resolution)")
+st.title("🚀 Absa's Delta India Scanner (Time-Bound)")
 if st.sidebar.button("Log out"):
     st.session_state["authenticated"] = False
     st.rerun()
 
 # Sidebar Filters
 st.sidebar.header("Filter Settings")
-# Defaults set to 0 to ensure you see data first!
 rsi_min = st.sidebar.slider("Min RSI (Bull)", 0, 100, 0)
 rsi_max = st.sidebar.slider("Max RSI (Bear)", 0, 100, 100)
 adx_min = st.sidebar.slider("Min ADX", 0, 50, 0)
@@ -68,43 +65,18 @@ def fetch_top_pairs():
     except Exception:
         return []
 
-# --- HELPER: SMART HISTORY FETCH ---
-def fetch_history_smart(symbol, start_ts, end_ts):
-    # If we already found the working resolution, use it directly
-    if st.session_state.best_resolution:
-        url = f"{BASE_URL}/v2/chart/history?symbol={symbol}&resolution={st.session_state.best_resolution}&from={start_ts}&to={end_ts}"
-        try:
-            r = requests.get(url, headers=HEADERS, timeout=2)
-            if r.status_code == 200: return r.json().get('result', [])
-        except: pass
-        return []
+@st.fragment(run_every=300)
+def refreshable_data_tables():
+    top_pairs = fetch_top_pairs()
+    if not top_pairs:
+        st.warning("Waiting for data...")
+        return
 
-    # Otherwise, BRUTE FORCE to find the right one
-    resolutions_to_try = ['1h', '60', '1H', '60m', '1d'] # List of candidates
-    
-    for res in resolutions_to_try:
-        url = f"{BASE_URL}/v2/chart/history?symbol={symbol}&resolution={res}&from={start_ts}&to={end_ts}"
-        try:
-            r = requests.get(url, headers=HEADERS, timeout=2)
-            if r.status_code == 200:
-                data = r.json().get('result', [])
-                # The Golden Check: Did we get enough hourly candles? 
-                # (7 candles = Daily/Fail. >20 candles = Hourly/Success)
-                if len(data) > 20:
-                    st.session_state.best_resolution = res # LOCK IT IN!
-                    # st.toast(f"Locked Resolution: {res}") # Debug notification
-                    return data
-        except: continue
-    
-    return []
-
-def render_dashboard(top_pairs):
+    # Dashboard
     col1, col2, col3 = st.columns([1, 1, 2])
     def find_pair(name): return next((t for t in top_pairs if name in t['symbol']), None)
-    
     btc = find_pair('BTC')
     eth = find_pair('ETH')
-    
     if btc:
         p = float(btc.get('close', 0))
         pct = float(btc.get('mark_change_24h', 0) or 0)
@@ -120,27 +92,26 @@ def render_dashboard(top_pairs):
         if abs(pct) < 1.0 and pct != 0: pct *= 100
         col2.metric("ETH", f"${p:,.2f}", f"{pct:.2f}%")
 
-@st.fragment(run_every=300)
-def refreshable_data_tables():
-    top_pairs = fetch_top_pairs()
-    if not top_pairs:
-        st.warning("Waiting for data...")
-        return
-
-    render_dashboard(top_pairs)
     st.markdown("---")
     
     bullish, bearish = [], []
-    progress_bar = st.progress(0, text="Auto-detecting resolution & scanning...")
+    progress_bar = st.progress(0, text="Scanning active pairs...")
     
-    # Time Range: Last 30 Days (enough to get >20 candles even if sparse)
+    # --- FIX: EXACT TIMESTAMPS FOR 'HISTORY/CANDLES' ---
+    # The API requires 'start' and 'end' (Unix Timestamp)
+    # We want last 5 days (approx 120 hourly candles)
     now = datetime.now(pytz.UTC)
-    ts_end = int(now.timestamp())
-    ts_start = int((now - timedelta(days=30)).timestamp())
+    end_ts = int(now.timestamp())
+    start_ts = int((now - timedelta(days=5)).timestamp())
+    
+    # Debug info
+    with st.expander("🕵️ Live Debug (First 3 Pairs)", expanded=True):
+        debug_cols = st.columns(3)
     
     for i, tick in enumerate(top_pairs):
         try:
             sym = tick['symbol']
+            pid = tick['product_id']
             ltp = float(tick.get('close', 0))
             raw_pct = float(tick.get('mark_change_24h', 0))
             p_change = raw_pct if abs(raw_pct) > 1.0 else raw_pct * 100
@@ -150,11 +121,31 @@ def refreshable_data_tables():
             oi_chg_pct = ((curr_oi - prev_oi) / prev_oi * 100) if prev_oi > 0 else 0
             st.session_state.oi_cache[sym] = curr_oi
             
-            # --- SMART HISTORY FETCH ---
-            history = fetch_history_smart(sym, ts_start, ts_end)
+            # --- API CALL: HISTORY/CANDLES ---
+            # Correct Params: resolution="60" (string), start=int, end=int
+            url = f"{BASE_URL}/v2/history/candles"
+            params = {
+                'product_id': pid,
+                'resolution': '60', 
+                'start': start_ts,
+                'end': end_ts
+            }
             
+            resp = requests.get(url, params=params, headers=HEADERS, timeout=2)
+            history = []
+            status_msg = f"Status {resp.status_code}"
+            
+            if resp.status_code == 200:
+                history = resp.json().get('result', [])
+            
+            # Debug Print
+            if i < 3:
+                with debug_cols[i]:
+                    st.info(f"**{sym}**\n\nAPI: {status_msg}\n\nCandles: {len(history)}")
+
             if history and len(history) > 15:
                 df = pd.DataFrame(history)
+                # Normalize Columns
                 df = df.rename(columns={'close': 'Close', 'high': 'High', 'low': 'Low', 'open': 'Open'})
                 df['Close'] = df['Close'].astype(float)
                 df['High'] = df['High'].astype(float)
