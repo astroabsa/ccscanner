@@ -119,7 +119,11 @@ def fetch_market_dashboard(client):
 def refreshable_data_tables():
     # Initialize Delta Client (No API Key needed for public data usually)
     # If Delta India requires a specific base_url, add base_url='...' here
-    delta_client = DeltaRestClient()
+    delta_client = DeltaRestClient(
+    base_url='https://api.india.delta.exchange', 
+    api_key='3C0Ms8rQBuVGbCOi7ZDDUbnE2ur1P5', 
+    api_secret='v0GeBUZXG9hdKEm7EG3rL4EzcKvndjD0MSgOyhv6AxywY8ogHUx91zyd2a29'
+)
     
     # 1. SHOW DASHBOARD & GET ALL TICKERS (Optimized: 1 API Call)
     all_tickers = fetch_market_dashboard(delta_client)
