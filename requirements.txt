@@ -1,5 +1,5 @@
 streamlit
-yfinance
+delta-rest-client
 pandas
 pandas_ta
 pytz
