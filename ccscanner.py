@@ -18,6 +18,7 @@ if "oi_cache" not in st.session_state:
 
 # --- 2. AUTHENTICATION ---
 def authenticate_user(user_in, pw_in):
+    # Add your CSV logic here if needed
     return True 
 
 if "authenticated" not in st.session_state:
@@ -35,7 +36,7 @@ if not st.session_state["authenticated"]:
     st.stop()
 
 # --- 3. MAIN APP ---
-st.title("🚀 Absa's Delta India Scanner (Final Fix)")
+st.title("🚀 Absa's Delta India Scanner")
 if st.sidebar.button("Log out"):
     st.session_state["authenticated"] = False
     st.rerun()
@@ -105,14 +106,9 @@ def refreshable_data_tables():
     end_ts = int(now.timestamp())
     start_ts = int((now - timedelta(days=5)).timestamp())
     
-    # Debug info
-    with st.expander("🕵️ Live Debug (First 3 Pairs)", expanded=True):
-        debug_cols = st.columns(3)
-    
     for i, tick in enumerate(top_pairs):
         try:
             sym = tick['symbol']
-            # We DON'T need product_id anymore for this endpoint!
             ltp = float(tick.get('close', 0))
             raw_pct = float(tick.get('mark_change_24h', 0))
             p_change = raw_pct if abs(raw_pct) > 1.0 else raw_pct * 100
@@ -122,28 +118,21 @@ def refreshable_data_tables():
             oi_chg_pct = ((curr_oi - prev_oi) / prev_oi * 100) if prev_oi > 0 else 0
             st.session_state.oi_cache[sym] = curr_oi
             
-            # --- API CALL: HISTORY/CANDLES (CORRECTED) ---
-            # KEY FIX: Use 'symbol' instead of 'product_id'
+            # --- API CALL: HISTORY/CANDLES ---
             url = f"{BASE_URL}/v2/history/candles"
             params = {
-                'symbol': sym,         # <--- THE FIX
-                'resolution': '1h',    # Standard string format
+                'symbol': sym,
+                'resolution': '1h',
                 'start': start_ts,
                 'end': end_ts
             }
             
             resp = requests.get(url, params=params, headers=HEADERS, timeout=2)
             history = []
-            status_msg = f"Status {resp.status_code}"
             
             if resp.status_code == 200:
                 history = resp.json().get('result', [])
             
-            # Debug Print
-            if i < 3:
-                with debug_cols[i]:
-                    st.info(f"**{sym}**\n\nAPI: {status_msg}\n\nCandles: {len(history)}")
-
             if history and len(history) > 15:
                 df = pd.DataFrame(history)
                 # Normalize Columns
@@ -181,8 +170,12 @@ def refreshable_data_tables():
             
     progress_bar.empty()
     
+    # Clean Column Config: Shows 'BTCUSD' instead of URL
     column_config = {
-        "Symbol": st.column_config.LinkColumn("Pair", display_text="^(.*)$"),
+        "Symbol": st.column_config.LinkColumn(
+            "Pair (Click to Trade)", 
+            display_text="https://india.delta.exchange/app/futures/trade/(.*)"
+        ),
         "LTP": st.column_config.NumberColumn("Price", format="$%.4f")
     }
     
@@ -190,11 +183,11 @@ def refreshable_data_tables():
     with c1:
         st.success("🟢 ACTIVE BULLS")
         if bullish: st.dataframe(pd.DataFrame(bullish).sort_values(by="Mom %", ascending=False).head(10), use_container_width=True, hide_index=True, column_config=column_config)
-        else: st.info("No bullish action.")
+        else: st.info("No bullish action matching filters.")
     with c2:
         st.error("🔴 ACTIVE BEARS")
         if bearish: st.dataframe(pd.DataFrame(bearish).sort_values(by="Mom %", ascending=True).head(10), use_container_width=True, hide_index=True, column_config=column_config)
-        else: st.info("No bearish action.")
+        else: st.info("No bearish action matching filters.")
 
     ist_time = datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S')
     st.write(f"🕒 **Last Data Sync:** {ist_time} IST")
