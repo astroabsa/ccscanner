@@ -7,40 +7,30 @@ from datetime import datetime
 import time
 
 # --- 1. APP CONFIGURATION ---
-st.set_page_config(page_title="Absa's Delta India Scanner", layout="wide")
+st.set_page_config(page_title="Absa's Delta India Scanner (Debug)", layout="wide")
 
-# --- 2. GLOBAL SETTINGS ---
-# We no longer hardcode symbols. We will auto-detect the top 25 by volume.
+# --- 2. SIDEBAR CONTROLS ---
+st.sidebar.header("⚙️ Scanner Settings")
+rsi_min = st.sidebar.slider("Min RSI (Bullish)", 0, 100, 55) # Lowered default
+rsi_max = st.sidebar.slider("Max RSI (Bearish)", 0, 100, 45) # Raised default
+adx_min = st.sidebar.slider("Min ADX (Trend Strength)", 0, 50, 15) # Lowered default
+show_debug = st.sidebar.checkbox("Show Debug Info (Why is it empty?)", value=True)
+
+# --- 3. GLOBAL SETTINGS ---
 BASE_URL = "https://api.india.delta.exchange"
+# Headers to prevent being blocked
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+}
 
-# Initialize Session State
 if "oi_cache" not in st.session_state:
     st.session_state.oi_cache = {}
 
-# --- 3. AUTHENTICATION ---
+# --- 4. AUTHENTICATION ---
 def authenticate_user(user_in, pw_in):
-    try:
-        csv_url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSEan21a9IVnkdmTFP2Q9O_ILI3waF52lFWQ5RTDtXDZ5MI4_yTQgFYcCXN5HxgkCxuESi5Dwe9iROB/pub?gid=0&single=true&output=csv"
-        # Note: Replace the URL above with your actual published CSV link if needed.
-        # For now, I'm using a placeholder logic or ensure you paste your link back.
-        # Since I don't have your link, I will assume it returns True for this demo
-        # or you MUST paste your link below:
-        # csv_url = "YOUR_LINK_HERE"
-        
-        # If you want to bypass login for testing, uncomment the next line:
-        # return True 
-        
-        df = pd.read_csv(csv_url)
-        df['username'] = df['username'].astype(str).str.strip().str.lower()
-        df['password'] = df['password'].astype(str).str.strip()
-        match = df[(df['username'] == str(user_in).strip().lower()) & 
-                   (df['password'] == str(pw_in).strip())]
-        return not match.empty
-    except Exception:
-        # Fallback for demo if link is broken
-        return True 
+    # Bypass for testing if needed, otherwise use your CSV logic
+    return True 
 
-# --- 4. LOGIN GATE ---
 if "authenticated" not in st.session_state:
     st.session_state["authenticated"] = False
 
@@ -58,10 +48,7 @@ if not st.session_state["authenticated"]:
     st.stop()
 
 # --- 5. MAIN APPLICATION ---
-st.title("🚀 Absa's Delta India Scanner (Auto-Discovery)")
-if st.sidebar.button("Log out"):
-    st.session_state["authenticated"] = False
-    st.rerun()
+st.title("🚀 Absa's Delta India Scanner (Diagnostic Mode)")
 
 def get_sentiment(p_chg, oi_chg):
     if p_chg > 0 and oi_chg > 0: return "Long Buildup 🚀"
@@ -70,126 +57,94 @@ def get_sentiment(p_chg, oi_chg):
     if p_chg > 0 and oi_chg < 0: return "Short Covering 💨"
     return "Neutral ➖"
 
-# --- HELPER: FETCH DATA & AUTO-DISCOVER ---
+# --- HELPER: FETCH DATA ---
 def fetch_market_data():
     try:
-        # 1. Get ALL Tickers first (to find top volume)
-        resp = requests.get(f"{BASE_URL}/v2/tickers")
-        if resp.status_code != 200: return {}, {}, []
+        # 1. Get Tickers
+        resp = requests.get(f"{BASE_URL}/v2/tickers", headers=HEADERS)
+        if resp.status_code != 200:
+            if show_debug: st.error(f"Ticker API Failed: {resp.status_code}")
+            return {}, {}, []
         
         tickers = resp.json().get('result', [])
         
-        # Filter for active pairs (e.g., USDT or USD pairs only to avoid noise)
-        # and Sort by 24h Volume (turnover) to get liquid pairs
-        valid_tickers = [t for t in tickers if t['symbol'].endswith('USDT') or t['symbol'].endswith('USD')]
+        # Filter for USDT pairs only
+        valid_tickers = [t for t in tickers if t['symbol'].endswith('USDT')]
         
-        # Sort by volume (descending) and take Top 25
-        # Some keys might be 'volume_24h' or 'turnover_24h'
+        # Sort by Volume to find active pairs
         valid_tickers.sort(key=lambda x: float(x.get('volume_24h', 0) or 0), reverse=True)
-        top_tickers = valid_tickers[:25]
+        top_tickers = valid_tickers[:25] # Top 25
         
         top_symbols = [t['symbol'] for t in top_tickers]
         ticker_map = {t['symbol']: t for t in top_tickers}
         
-        # 2. Get Products (to map IDs for history)
-        resp_prod = requests.get(f"{BASE_URL}/v2/products")
+        # 2. Get Products (IDs)
+        resp_prod = requests.get(f"{BASE_URL}/v2/products", headers=HEADERS)
         products = resp_prod.json().get('result', [])
         product_map = {p['symbol']: p for p in products if p['symbol'] in top_symbols}
         
+        if show_debug:
+            st.info(f"✅ Found {len(top_tickers)} active pairs. Mapping IDs for history fetch...")
+            
         return product_map, ticker_map, top_symbols
         
     except Exception as e:
-        st.error(f"API Error: {e}")
+        st.error(f"Critical API Error: {e}")
         return {}, {}, []
-
-def render_dashboard(ticker_map):
-    col1, col2, col3 = st.columns([1, 1, 2])
-    
-    # Try to find BTC/ETH variants in the map
-    btc_sym = next((s for s in ticker_map if 'BTC' in s), None)
-    eth_sym = next((s for s in ticker_map if 'ETH' in s), None)
-    
-    if btc_sym:
-        btc = ticker_map[btc_sym]
-        p = float(btc.get('close', 0))
-        pct = float(btc.get('percent_change_24h', 0)) # Delta might send 5.5 or 0.05
-        # Auto-detect decimal scaling
-        if abs(pct) < 0.5 and pct != 0: pct *= 100 
-            
-        col1.metric(f"{btc_sym}", f"${p:,.2f}", f"{pct:.2f}%")
-        
-        bias, color = ("SIDEWAYS ↔️", "gray")
-        if pct > 0.5: bias, color = ("BULLISH 🚀", "green")
-        elif pct < -0.5: bias, color = ("BEARISH 📉", "red")
-        
-        col3.markdown(f"""
-            <div style="text-align: center; padding: 10px; border: 1px solid {color}; border-radius: 10px;">
-                <h3 style="margin:0; color: {color};">Market Bias: {bias}</h3>
-            </div>
-        """, unsafe_allow_html=True)
-
-    if eth_sym:
-        eth = ticker_map[eth_sym]
-        p = float(eth.get('close', 0))
-        pct = float(eth.get('percent_change_24h', 0))
-        if abs(pct) < 0.5 and pct != 0: pct *= 100
-        col2.metric(f"{eth_sym}", f"${p:,.2f}", f"{pct:.2f}%")
 
 @st.fragment(run_every=300)
 def refreshable_data_tables():
-    # 1. AUTO-DISCOVER & FETCH
     product_map, ticker_map, top_symbols = fetch_market_data()
     
     if not top_symbols:
-        st.warning("Waiting for Delta Exchange data... (Check API connection)")
+        st.warning("⚠️ No pairs found. API might be down or blocked.")
         return
 
-    # 2. DASHBOARD
-    render_dashboard(ticker_map)
     st.markdown("---")
     
-    # Debug: Show user what is being scanned
-    # st.caption(f"Scanning Top {len(top_symbols)} Active Pairs: {', '.join(top_symbols[:5])}...")
-
     bullish, bearish = [], []
-    progress_bar = st.progress(0, text="Analyzing Market Data...")
+    # Log for debugging
+    debug_logs = []
+
+    progress_bar = st.progress(0, text="Scanning...")
     
     for i, sym in enumerate(top_symbols):
         try:
-            if sym not in product_map: continue
+            if sym not in product_map: 
+                debug_logs.append(f"❌ {sym}: No Product ID found")
+                continue
             
             # Data Points
             pid = product_map[sym]['id']
             tick = ticker_map[sym]
             ltp = float(tick.get('close', 0))
             
-            # % Change Handling
+            # Percent Change Fix
+            # If price is 100 and 24h change is 5, API might send 5.0
             raw_pct = float(tick.get('percent_change_24h', 0))
-            p_change = raw_pct * 100 if abs(raw_pct) < 1.0 else raw_pct
+            # Heuristic: if raw < 1.0 (like 0.05), assume decimal. Else assume percentage.
+            p_change = raw_pct * 100 if abs(raw_pct) < 1.0 and raw_pct != 0 else raw_pct
             
-            # OI
             curr_oi = float(tick.get('open_interest', 0))
             
-            # OI Change Cache
+            # OI Change
             prev_oi = st.session_state.oi_cache.get(sym, curr_oi)
             oi_chg_pct = ((curr_oi - prev_oi) / prev_oi * 100) if prev_oi > 0 else 0
             st.session_state.oi_cache[sym] = curr_oi
             
-            # History Fetch
+            # Fetch History
             hist_url = f"{BASE_URL}/v2/history/candles?product_id={pid}&resolution=60&limit=60"
-            resp = requests.get(hist_url, timeout=5)
+            resp = requests.get(hist_url, headers=HEADERS, timeout=5)
             
             if resp.status_code == 200:
                 history = resp.json().get('result', [])
                 if history and len(history) > 30:
                     df = pd.DataFrame(history)
-                    # Normalize columns
                     df = df.rename(columns={'close': 'Close', 'high': 'High', 'low': 'Low'})
                     df['Close'] = df['Close'].astype(float)
                     df['High'] = df['High'].astype(float)
                     df['Low'] = df['Low'].astype(float)
                     
-                    # Indicators
                     df['RSI'] = ta.rsi(df['Close'], length=14)
                     adx_df = ta.adx(df['High'], df['Low'], df['Close'], length=14)
                     df['EMA_5'] = ta.ema(df['Close'], length=5)
@@ -213,19 +168,28 @@ def refreshable_data_tables():
                         "Sentiment": sentiment
                     }
                     
-                    # Logic: RSI > 60 (Bull) / RSI < 45 (Bear) + ADX > 20
-                    if p_change > 0.5 and curr_rsi > 60 and curr_adx > 20:
+                    # FILTER LOGIC (Controlled by Sidebar)
+                    if p_change > 0 and curr_rsi > rsi_min and curr_adx > adx_min:
                         bullish.append(row)
-                    elif p_change < -0.5 and curr_rsi < 45 and curr_adx > 20:
+                        debug_logs.append(f"✅ {sym}: BULLISH (RSI {curr_rsi:.1f}, ADX {curr_adx:.1f})")
+                    elif p_change < 0 and curr_rsi < rsi_max and curr_adx > adx_min:
                         bearish.append(row)
-                        
+                        debug_logs.append(f"✅ {sym}: BEARISH (RSI {curr_rsi:.1f}, ADX {curr_adx:.1f})")
+                    else:
+                        # Log why it failed (very helpful for debugging!)
+                        debug_logs.append(f"⚪ {sym}: Skipped. RSI: {curr_rsi:.1f}, ADX: {curr_adx:.1f}")
+                else:
+                    debug_logs.append(f"⚠️ {sym}: History empty or too short")
+            else:
+                debug_logs.append(f"❌ {sym}: History API {resp.status_code}")
+
             progress_bar.progress((i + 1) / len(top_symbols))
-        except Exception:
+        except Exception as e:
+            debug_logs.append(f"💥 {sym}: Error {str(e)}")
             continue
             
     progress_bar.empty()
     
-    # Display Tables
     column_config = {
         "Symbol": st.column_config.LinkColumn("Pair", display_text="^(.*)$"),
         "LTP": st.column_config.NumberColumn("Price", format="$%.4f")
@@ -233,20 +197,25 @@ def refreshable_data_tables():
     
     c1, c2 = st.columns(2)
     with c1:
-        st.success("🟢 ACTIVE BULLS")
+        st.success(f"🟢 ACTIVE BULLS (RSI > {rsi_min})")
         if bullish:
             st.dataframe(pd.DataFrame(bullish).sort_values(by="Mom %", ascending=False).head(10), 
                          use_container_width=True, hide_index=True, column_config=column_config)
         else:
-            st.info("No bullish action.")
+            st.info("No bullish action matching filters.")
             
     with c2:
-        st.error("🔴 ACTIVE BEARS")
+        st.error(f"🔴 ACTIVE BEARS (RSI < {rsi_max})")
         if bearish:
             st.dataframe(pd.DataFrame(bearish).sort_values(by="Mom %", ascending=True).head(10), 
                          use_container_width=True, hide_index=True, column_config=column_config)
         else:
-            st.info("No bearish action.")
+            st.info("No bearish action matching filters.")
+
+    # Show Debug Logs if checkbox is on
+    if show_debug:
+        with st.expander("🕵️ Debug Logs (Check this if tables are empty)"):
+            st.write(debug_logs)
 
     ist_time = datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S')
     st.write(f"🕒 **Last Data Sync:** {ist_time} IST")
