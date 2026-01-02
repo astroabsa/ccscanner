@@ -20,7 +20,7 @@ if "oi_cache" not in st.session_state:
 
 # --- 3. AUTHENTICATION ---
 def authenticate_user(user_in, pw_in):
-    return True # Bypass for now
+    return True 
 
 if "authenticated" not in st.session_state:
     st.session_state["authenticated"] = False
@@ -37,16 +37,17 @@ if not st.session_state["authenticated"]:
     st.stop()
 
 # --- 4. MAIN APPLICATION ---
-st.title("🚀 Absa's Delta India Scanner (Chart API Mode)")
+st.title("🚀 Absa's Delta India Scanner (Extended History)")
 if st.sidebar.button("Log out"):
     st.session_state["authenticated"] = False
     st.rerun()
 
 # Sidebar Filters
 st.sidebar.header("Filter Settings")
-rsi_min = st.sidebar.slider("Min RSI (Bull)", 0, 100, 50)
-rsi_max = st.sidebar.slider("Max RSI (Bear)", 0, 100, 50)
-adx_min = st.sidebar.slider("Min ADX", 0, 50, 15)
+# Set defaults to 0 to ensure data shows up first!
+rsi_min = st.sidebar.slider("Min RSI (Bull)", 0, 100, 0) 
+rsi_max = st.sidebar.slider("Max RSI (Bear)", 0, 100, 100)
+adx_min = st.sidebar.slider("Min ADX", 0, 50, 0)
 
 def get_sentiment(p_chg, oi_chg):
     if p_chg > 0 and oi_chg > 0: return "Long Buildup 🚀"
@@ -62,9 +63,7 @@ def fetch_top_pairs():
         if resp.status_code != 200: return []
         
         tickers = resp.json().get('result', [])
-        # Strict Filter: Must have 'USD' in symbol
         valid = [t for t in tickers if 'USD' in t['symbol']]
-        # Sort by Turnover
         valid.sort(key=lambda x: float(x.get('turnover', 0) or 0), reverse=True)
         return valid[:30]
     except Exception as e:
@@ -115,16 +114,18 @@ def refreshable_data_tables():
     
     bullish, bearish = [], []
     
-    # Debugging
+    # Debug info
     with st.expander("🕵️ Live Debug (First 3 Pairs)", expanded=True):
+        st.caption("We need > 15 candles to generate signals.")
         debug_cols = st.columns(3)
     
     progress_bar = st.progress(0, text="Scanning active pairs...")
     
-    # Calculate Timestamps for Chart API
+    # --- FIX: EXPANDED TIME WINDOW ---
+    # We ask for 30 DAYS of history to ensure we get enough hourly candles
     now = datetime.now(pytz.UTC)
     ts_end = int(now.timestamp())
-    ts_start = int((now - timedelta(hours=60)).timestamp()) # 60 hours back
+    ts_start = int((now - timedelta(days=30)).timestamp()) 
     
     for i, tick in enumerate(top_pairs):
         try:
@@ -139,10 +140,9 @@ def refreshable_data_tables():
             oi_chg_pct = ((curr_oi - prev_oi) / prev_oi * 100) if prev_oi > 0 else 0
             st.session_state.oi_cache[sym] = curr_oi
             
-            # --- NEW STRATEGY: CHART HISTORY ENDPOINT ---
-            # Using /chart/history with time range
+            # Request History
             chart_url = f"{BASE_URL}/v2/chart/history?symbol={sym}&resolution=60&from={ts_start}&to={ts_end}"
-            resp = requests.get(chart_url, headers=HEADERS, timeout=4)
+            resp = requests.get(chart_url, headers=HEADERS, timeout=3)
             
             history = []
             status_msg = f"Status {resp.status_code}"
@@ -155,10 +155,10 @@ def refreshable_data_tables():
                 with debug_cols[i]:
                     st.info(f"**{sym}**\n\nAPI: {status_msg}\n\nCandles: {len(history)}")
 
-            if history and len(history) > 30:
+            # --- FIX: LOWERED MINIMUM REQUIREMENT ---
+            # Reduced from 30 to 15 to catch sparse data
+            if history and len(history) > 15:
                 df = pd.DataFrame(history)
-                # Chart API returns: time, open, high, low, close, volume
-                # Ensure correct naming
                 df = df.rename(columns={'close': 'Close', 'high': 'High', 'low': 'Low', 'open': 'Open'})
                 
                 df['Close'] = df['Close'].astype(float)
@@ -188,7 +188,7 @@ def refreshable_data_tables():
                     "Sentiment": sentiment
                 }
                 
-                # Filters
+                # Check Filters (Using Sidebar Values)
                 if p_change > 0:
                     if curr_rsi > rsi_min and curr_adx > adx_min:
                         bullish.append(row)
@@ -196,7 +196,7 @@ def refreshable_data_tables():
                     if curr_rsi < rsi_max and curr_adx > adx_min:
                         bearish.append(row)
                         
-            time.sleep(0.05)
+            time.sleep(0.02)
             progress_bar.progress((i + 1) / len(top_pairs))
             
         except Exception:
