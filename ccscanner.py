@@ -1,5 +1,5 @@
 import streamlit as st
-import ccxt
+import yfinance as yf
 import pandas as pd
 import pandas_ta as ta
 import pytz
@@ -7,21 +7,17 @@ from datetime import datetime
 import time
 
 # --- 1. APP CONFIGURATION ---
-st.set_page_config(page_title="Absa's Crypto F&O Scanner", layout="wide")
+st.set_page_config(page_title="Absa's Crypto Scanner Pro", layout="wide")
 
-# --- 2. GLOBAL SETTINGS ---
-# Top Liquid Crypto Futures Pairs (USDT-M)
+# --- 2. GLOBAL SETTINGS (Yahoo Finance Symbols) ---
+# We use 'BTC-USD' format which is reliable on Streamlit Cloud
 CRYPTO_PAIRS = [
-    'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT', 
-    'DOGE/USDT', 'ADA/USDT', 'AVAX/USDT', 'LINK/USDT', 'DOT/USDT', 
-    'MATIC/USDT', 'LTC/USDT', 'ATOM/USDT', 'NEAR/USDT', 'UNI/USDT', 
-    'BCH/USDT', 'ETC/USDT', 'FIL/USDT', 'APT/USDT', 'ARB/USDT',
-    'OP/USDT', 'INJ/USDT', 'RNDR/USDT', 'PEPE/USDT', 'SUI/USDT'
+    'BTC-USD', 'ETH-USD', 'SOL-USD', 'BNB-USD', 'XRP-USD', 
+    'DOGE-USD', 'ADA-USD', 'AVAX-USD', 'LINK-USD', 'DOT-USD', 
+    'MATIC-USD', 'LTC-USD', 'ATOM-USD', 'NEAR-USD', 'UNI-USD', 
+    'BCH-USD', 'ETC-USD', 'FIL-USD', 'APT-USD', 'ARB-USD',
+    'OP-USD', 'INJ-USD', 'RNDR-USD', 'PEPE-USD', 'SUI-USD'
 ]
-
-# Initialize Session State for OI Tracking (to calculate OI Change)
-if "oi_cache" not in st.session_state:
-    st.session_state.oi_cache = {}
 
 # --- 3. AUTHENTICATION (Same CSV Method) ---
 def authenticate_user(user_in, pw_in):
@@ -58,43 +54,51 @@ if not st.session_state["authenticated"]:
     st.stop()
 
 # --- 5. MAIN APPLICATION ---
-st.title("🚀 Absa's Crypto Futures Scanner (Binance)")
+st.title("🚀 Absa's Crypto Scanner Pro")
 if st.sidebar.button("Log out"):
     st.session_state["authenticated"] = False
     st.rerun()
 
-def get_sentiment(p_chg, oi_chg):
-    # Interpretation of Price vs OI
-    if p_chg > 0 and oi_chg > 0: return "Long Buildup 🚀"
-    if p_chg < 0 and oi_chg > 0: return "Short Buildup 📉"
-    if p_chg < 0 and oi_chg < 0: return "Long Unwinding ⚠️"
-    if p_chg > 0 and oi_chg < 0: return "Short Covering 💨"
+def get_sentiment(p_chg, vol_chg):
+    # Volume Analysis as Proxy for OI
+    # Price UP + Volume UP = Strong Buying
+    if p_chg > 0 and vol_chg > 0: return "Strong Buying 🚀"
+    # Price DOWN + Volume UP = Strong Selling
+    if p_chg < 0 and vol_chg > 0: return "Strong Selling 📉"
+    # Price UP + Volume DOWN = Weak Buying (Caution)
+    if p_chg > 0 and vol_chg < 0: return "Weak Buying ⚠️"
+    # Price DOWN + Volume DOWN = Weak Selling (Caution)
+    if p_chg < 0 and vol_chg < 0: return "Weak Selling 💤"
     return "Neutral ➖"
 
 # --- HELPER: MARKET DASHBOARD (BTC/ETH) ---
-def fetch_market_dashboard(exchange):
+def fetch_market_dashboard():
     col1, col2, col3 = st.columns([1, 1, 2])
-    
-    targets = ['BTC/USDT', 'ETH/USDT']
+    targets = {'BTC-USD': 'Bitcoin', 'ETH-USD': 'Ethereum'}
     data = {}
     
-    for sym in targets:
+    for sym, name in targets.items():
         try:
-            ticker = exchange.fetch_ticker(sym)
-            ltp = ticker['last']
-            pct = ticker['percentage'] # 24h change %
-            chg = ticker['change']
-            data[sym] = {"ltp": ltp, "pct": pct, "chg": chg}
+            # Fetch 5 days history for robust calculation
+            hist = yf.Ticker(sym).history(period="5d")
+            if not hist.empty:
+                ltp = hist['Close'].iloc[-1]
+                prev = hist['Close'].iloc[-2]
+                chg = ltp - prev
+                pct = (chg / prev) * 100
+                data[sym] = {"ltp": ltp, "pct": pct}
+            else:
+                data[sym] = {"ltp": 0, "pct": 0}
         except:
-            data[sym] = {"ltp": 0, "pct": 0, "chg": 0}
+            data[sym] = {"ltp": 0, "pct": 0}
 
     with col1:
-        btc = data['BTC/USDT']
-        st.metric("BTC/USDT", f"${btc['ltp']:,.2f}", f"{btc['pct']:.2f}%")
+        btc = data['BTC-USD']
+        st.metric("BTC (USD)", f"${btc['ltp']:,.2f}", f"{btc['pct']:.2f}%")
         
     with col2:
-        eth = data['ETH/USDT']
-        st.metric("ETH/USDT", f"${eth['ltp']:,.2f}", f"{eth['pct']:.2f}%")
+        eth = data['ETH-USD']
+        st.metric("ETH (USD)", f"${eth['ltp']:,.2f}", f"{eth['pct']:.2f}%")
         
     with col3:
         bias = "SIDEWAYS ↔️"
@@ -114,87 +118,64 @@ def fetch_market_dashboard(exchange):
 
 @st.fragment(run_every=300)
 def refreshable_data_tables():
-    # Initialize CCXT Binance Futures
-    exchange = ccxt.binanceusdm() 
-    
     # 1. SHOW DASHBOARD
-    fetch_market_dashboard(exchange)
+    fetch_market_dashboard()
     st.markdown("---")
     
     bullish, bearish = [], []
-    progress_bar = st.progress(0, text="Fetching Binance Futures Data...")
+    progress_bar = st.progress(0, text="Fetching Live Crypto Data...")
     
     for i, sym in enumerate(CRYPTO_PAIRS):
         try:
-            # A. Fetch OHLCV (Hourly)
-            ohlcv = exchange.fetch_ohlcv(sym, timeframe='1h', limit=60)
-            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            ticker = yf.Ticker(sym)
+            data = ticker.history(period='5d', interval='1h') 
             
-            # B. Fetch Live Ticker (for Open Price & 24h stats)
-            ticker_info = exchange.fetch_ticker(sym)
-            
-            # C. Fetch Open Interest
-            try:
-                oi_data = exchange.fetch_open_interest(sym)
-                curr_oi = float(oi_data['openInterest'])
-            except:
-                curr_oi = 0
-            
-            # --- OI CHANGE LOGIC (Session State) ---
-            # If we saw this symbol before, calculate change. If new, change is 0.
-            if sym in st.session_state.oi_cache:
-                prev_oi = st.session_state.oi_cache[sym]
-                oi_chg_val = curr_oi - prev_oi
-                # Percentage change of OI
-                oi_chg_pct = ((curr_oi - prev_oi) / prev_oi) * 100 if prev_oi > 0 else 0
-            else:
-                oi_chg_pct = 0
-            
-            # Update cache for next refresh
-            st.session_state.oi_cache[sym] = curr_oi
-            
-            if len(df) > 30:
-                # Indicators
-                df['RSI'] = ta.rsi(df['close'], length=14)
-                adx_df = ta.adx(df['high'], df['low'], df['close'], length=14)
-                df['EMA_5'] = ta.ema(df['close'], length=5)
+            if len(data) > 30:
+                data['RSI'] = ta.rsi(data['Close'], length=14)
+                adx_df = ta.adx(data['High'], data['Low'], data['Close'], length=14)
+                data['EMA_5'] = ta.ema(data['Close'], length=5)
                 
-                ltp = df['close'].iloc[-1]
-                ema_5 = df['EMA_5'].iloc[-1]
-                curr_rsi = df['RSI'].iloc[-1]
-                curr_adx = adx_df['ADX_14'].iloc[-1]
+                ltp = data['Close'].iloc[-1]
+                ema_5 = data['EMA_5'].iloc[-1]
                 
                 # Active Momentum (EMA Deviation)
                 momentum_pct = round(((ltp - ema_5) / ema_5) * 100, 2)
                 
-                # 24h Change (from Ticker)
-                p_change = float(ticker_info['percentage'])
+                curr_rsi = data['RSI'].iloc[-1]
+                curr_adx = adx_df['ADX_14'].iloc[-1]
                 
-                # Determine Sentiment
-                sentiment = get_sentiment(p_change, oi_chg_pct)
+                # Calculate Price Change (vs 24h ago approx)
+                prev_close = data['Close'].iloc[-24] if len(data) >= 24 else data['Close'].iloc[0]
+                p_change = round(((ltp - prev_close) / prev_close) * 100, 2)
                 
-                # TradingView Link (Binance Futures format)
-                clean_sym = sym.replace("/", "") # BTC/USDT -> BTCUSDT
-                tv_url = f"https://www.tradingview.com/chart/?symbol=BINANCE:{clean_sym}.P"
+                # Calculate Volume Change (Current vs Average)
+                curr_vol = data['Volume'].iloc[-1]
+                avg_vol = data['Volume'].tail(24).mean()
+                vol_chg = curr_vol - avg_vol
+                
+                sentiment = get_sentiment(p_change, vol_chg)
+                
+                # TradingView Link (Binance Spot Format)
+                clean_sym = sym.replace("-USD", "USDT") # BTC-USD -> BTCUSDT
+                tv_url = f"https://www.tradingview.com/chart/?symbol=BINANCE:{clean_sym}"
                 
                 row = {
                     "Symbol": tv_url,
-                    "LTP": ltp,
-                    "Mom %": momentum_pct, # Active Trend
-                    "24h %": round(p_change, 2),
+                    "LTP": round(ltp, 4), # 4 decimals for crypto
+                    "Mom %": momentum_pct,
+                    "24h %": p_change,
                     "RSI": round(curr_rsi, 1),
                     "ADX": round(curr_adx, 1),
                     "Sentiment": sentiment
                 }
                 
-                # Logic: RSI > 60 (Bull) / RSI < 45 (Bear) + ADX > 20
                 if p_change > 0.5 and curr_rsi > 60 and curr_adx > 20:
                     bullish.append(row)
                 elif p_change < -0.5 and curr_rsi < 45 and curr_adx > 20:
                     bearish.append(row)
             
             progress_bar.progress((i + 1) / len(CRYPTO_PAIRS))
-        except Exception as e:
+        except:
             continue
     
     progress_bar.empty()
@@ -202,7 +183,7 @@ def refreshable_data_tables():
     column_config = {
         "Symbol": st.column_config.LinkColumn(
             "Pair (Click to Chart)", 
-            display_text="symbol=BINANCE:(.*).P" # Shows "BTCUSDT" text
+            display_text="symbol=BINANCE:(.*)"
         ),
         "LTP": st.column_config.NumberColumn("Price ($)", format="$%.4f")
     }
