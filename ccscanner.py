@@ -11,30 +11,18 @@ st.set_page_config(page_title="Absa's Delta India Scanner", layout="wide")
 
 # --- 2. GLOBAL SETTINGS ---
 BASE_URL = "https://api.india.delta.exchange"
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+}
 
-# Initialize Session State
 if "oi_cache" not in st.session_state:
     st.session_state.oi_cache = {}
 
 # --- 3. AUTHENTICATION ---
 def authenticate_user(user_in, pw_in):
-    try:
-        # REPLACE THIS with your "Publish to web" CSV link
-        csv_url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSEan21a9IVnkdmTFP2Q9O_ILI3waF52lFWQ5RTDtXDZ5MI4_yTQgFYcCXN5HxgkCxuESi5Dwe9iROB/pub?gid=0&single=true&output=csv"
-        
-        # Bypass login for testing (Remove this line to enforce login)
-        return True 
-        
-        df = pd.read_csv(csv_url)
-        df['username'] = df['username'].astype(str).str.strip().str.lower()
-        df['password'] = df['password'].astype(str).str.strip()
-        match = df[(df['username'] == str(user_in).strip().lower()) & 
-                   (df['password'] == str(pw_in).strip())]
-        return not match.empty
-    except Exception:
-        return True 
+    # Bypass for testing
+    return True 
 
-# --- 4. LOGIN GATE ---
 if "authenticated" not in st.session_state:
     st.session_state["authenticated"] = False
 
@@ -51,11 +39,17 @@ if not st.session_state["authenticated"]:
                 st.error("Invalid credentials.")
     st.stop()
 
-# --- 5. MAIN APPLICATION ---
-st.title("🚀 Absa's Delta India Scanner (Auto-Discovery)")
+# --- 4. MAIN APPLICATION ---
+st.title("🚀 Absa's Delta India Scanner")
 if st.sidebar.button("Log out"):
     st.session_state["authenticated"] = False
     st.rerun()
+
+# Sidebar Filters (Adjustable)
+st.sidebar.header("Filter Settings")
+rsi_min = st.sidebar.slider("Min RSI (Bull)", 0, 100, 55)
+rsi_max = st.sidebar.slider("Max RSI (Bear)", 0, 100, 45)
+adx_min = st.sidebar.slider("Min ADX", 0, 50, 15)
 
 def get_sentiment(p_chg, oi_chg):
     if p_chg > 0 and oi_chg > 0: return "Long Buildup 🚀"
@@ -64,51 +58,47 @@ def get_sentiment(p_chg, oi_chg):
     if p_chg > 0 and oi_chg < 0: return "Short Covering 💨"
     return "Neutral ➖"
 
-# --- HELPER: FETCH DATA & AUTO-DISCOVER ---
-def fetch_market_data():
+# --- HELPER: FETCH DATA (Simplified) ---
+def fetch_top_pairs():
     try:
-        # 1. Get ALL Tickers
-        resp = requests.get(f"{BASE_URL}/v2/tickers")
-        if resp.status_code != 200: return {}, {}, []
+        # Get ALL Tickers
+        resp = requests.get(f"{BASE_URL}/v2/tickers", headers=HEADERS)
+        if resp.status_code != 200: return []
         
         tickers = resp.json().get('result', [])
         
-        # FIX: Accept 'USD' OR 'USDT' (Matches your raw data 'ZROUSD')
-        valid_tickers = [t for t in tickers if t['symbol'].endswith('USD') or t['symbol'].endswith('USDT')]
+        # Filter: Must contain 'USD' (covers USD and USDT)
+        # AND must have a valid product_id
+        valid = [t for t in tickers if 'USD' in t['symbol'] and t.get('product_id')]
         
-        # FIX: Sort by 'turnover' (present in your raw data) or 'volume'
-        # This ensures we get the most active pairs first
-        valid_tickers.sort(key=lambda x: float(x.get('turnover', 0) or x.get('volume', 0)), reverse=True)
-        top_tickers = valid_tickers[:30] # Top 30 Active Pairs
+        # Sort by Turnover (Volume)
+        valid.sort(key=lambda x: float(x.get('turnover', 0) or 0), reverse=True)
         
-        top_symbols = [t['symbol'] for t in top_tickers]
-        ticker_map = {t['symbol']: t for t in top_tickers}
-        
-        # 2. Get Products (to map IDs for history)
-        resp_prod = requests.get(f"{BASE_URL}/v2/products")
-        products = resp_prod.json().get('result', [])
-        product_map = {p['symbol']: p for p in products if p['symbol'] in top_symbols}
-        
-        return product_map, ticker_map, top_symbols
+        # Return Top 30
+        return valid[:30]
         
     except Exception as e:
         st.error(f"API Error: {e}")
-        return {}, {}, []
+        return []
 
-def render_dashboard(ticker_map):
+def render_dashboard(top_pairs):
     col1, col2, col3 = st.columns([1, 1, 2])
     
-    # Try to find BTC/ETH (could be BTCUSD or BTCUSDT)
-    btc_sym = next((s for s in ticker_map if s.startswith('BTC')), None)
-    eth_sym = next((s for s in ticker_map if s.startswith('ETH')), None)
+    # Helper to find symbol in list
+    def find_pair(name_part):
+        return next((t for t in top_pairs if name_part in t['symbol']), None)
+
+    btc = find_pair('BTC')
+    eth = find_pair('ETH')
     
-    if btc_sym:
-        btc = ticker_map[btc_sym]
+    if btc:
         p = float(btc.get('close', 0))
-        # Use 'mark_change_24h' or calculate manually if pct missing
-        pct = float(btc.get('mark_change_24h', 0) or 0)
+        # Use mark_change_24h if percent_change is missing/weird
+        pct = float(btc.get('mark_change_24h', 0) or btc.get('percent_change_24h', 0) or 0)
+        # Fix decimal vs percent issue
+        if abs(pct) < 1.0 and pct != 0: pct *= 100
             
-        col1.metric(f"{btc_sym}", f"${p:,.2f}", f"{pct:.2f}%")
+        col1.metric("BTC", f"${p:,.2f}", f"{pct:.2f}%")
         
         bias, color = ("SIDEWAYS ↔️", "gray")
         if pct > 0.5: bias, color = ("BULLISH 🚀", "green")
@@ -120,57 +110,54 @@ def render_dashboard(ticker_map):
             </div>
         """, unsafe_allow_html=True)
 
-    if eth_sym:
-        eth = ticker_map[eth_sym]
+    if eth:
         p = float(eth.get('close', 0))
         pct = float(eth.get('mark_change_24h', 0) or 0)
-        col2.metric(f"{eth_sym}", f"${p:,.2f}", f"{pct:.2f}%")
+        if abs(pct) < 1.0 and pct != 0: pct *= 100
+        col2.metric("ETH", f"${p:,.2f}", f"{pct:.2f}%")
 
 @st.fragment(run_every=300)
 def refreshable_data_tables():
-    # 1. AUTO-DISCOVER
-    product_map, ticker_map, top_symbols = fetch_market_data()
+    # 1. FETCH TOP PAIRS
+    top_pairs = fetch_top_pairs()
     
-    if not top_symbols:
-        st.warning("Waiting for Delta Exchange data...")
+    if not top_pairs:
+        st.warning("Waiting for data...")
         return
 
     # 2. DASHBOARD
-    render_dashboard(ticker_map)
+    render_dashboard(top_pairs)
     st.markdown("---")
     
     bullish, bearish = [], []
-    progress_bar = st.progress(0, text="Analyzing Market Data...")
+    progress_bar = st.progress(0, text="Scanning active pairs...")
     
-    for i, sym in enumerate(top_symbols):
+    for i, tick in enumerate(top_pairs):
         try:
-            if sym not in product_map: continue
-            
-            # Data Points
-            pid = product_map[sym]['id']
-            tick = ticker_map[sym]
+            sym = tick['symbol']
+            pid = tick['product_id'] # DIRECT ACCESS
             ltp = float(tick.get('close', 0))
             
-            # Use 'mark_change_24h' from your raw data (it was 7.4427)
-            p_change = float(tick.get('mark_change_24h', 0))
+            # % Change
+            raw_pct = float(tick.get('mark_change_24h', 0))
+            p_change = raw_pct if abs(raw_pct) > 1.0 else raw_pct * 100
             
-            # OI (contracts)
-            curr_oi = float(tick.get('oi_contracts', 0) or tick.get('open_interest', 0))
+            # OI
+            curr_oi = float(tick.get('oi_contracts', 0) or tick.get('open_interest', 0) or 0)
             
-            # OI Change Cache
+            # OI Cache
             prev_oi = st.session_state.oi_cache.get(sym, curr_oi)
             oi_chg_pct = ((curr_oi - prev_oi) / prev_oi * 100) if prev_oi > 0 else 0
             st.session_state.oi_cache[sym] = curr_oi
             
             # History Fetch
             hist_url = f"{BASE_URL}/v2/history/candles?product_id={pid}&resolution=60&limit=60"
-            resp = requests.get(hist_url, timeout=5)
+            resp = requests.get(hist_url, headers=HEADERS, timeout=3)
             
             if resp.status_code == 200:
                 history = resp.json().get('result', [])
                 if history and len(history) > 30:
                     df = pd.DataFrame(history)
-                    # Normalize columns (Delta returns t, o, h, l, c, v)
                     df = df.rename(columns={'close': 'Close', 'high': 'High', 'low': 'Low'})
                     df['Close'] = df['Close'].astype(float)
                     df['High'] = df['High'].astype(float)
@@ -200,13 +187,13 @@ def refreshable_data_tables():
                         "Sentiment": sentiment
                     }
                     
-                    # Logic: Standard RSI/ADX filters
-                    if p_change > 0.5 and curr_rsi > 60 and curr_adx > 20:
+                    # Logic using SIDEBAR SLIDERS
+                    if p_change > 0 and curr_rsi > rsi_min and curr_adx > adx_min:
                         bullish.append(row)
-                    elif p_change < -0.5 and curr_rsi < 45 and curr_adx > 20:
+                    elif p_change < 0 and curr_rsi < rsi_max and curr_adx > adx_min:
                         bearish.append(row)
                         
-            progress_bar.progress((i + 1) / len(top_symbols))
+            progress_bar.progress((i + 1) / len(top_pairs))
         except Exception:
             continue
             
@@ -220,7 +207,7 @@ def refreshable_data_tables():
     
     c1, c2 = st.columns(2)
     with c1:
-        st.success("🟢 ACTIVE BULLS")
+        st.success(f"🟢 ACTIVE BULLS")
         if bullish:
             st.dataframe(pd.DataFrame(bullish).sort_values(by="Mom %", ascending=False).head(10), 
                          use_container_width=True, hide_index=True, column_config=column_config)
@@ -228,7 +215,7 @@ def refreshable_data_tables():
             st.info("No bullish action.")
             
     with c2:
-        st.error("🔴 ACTIVE BEARS")
+        st.error(f"🔴 ACTIVE BEARS")
         if bearish:
             st.dataframe(pd.DataFrame(bearish).sort_values(by="Mom %", ascending=True).head(10), 
                          use_container_width=True, hide_index=True, column_config=column_config)
