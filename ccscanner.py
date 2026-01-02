@@ -135,7 +135,7 @@ def refreshable_data_tables():
             url = f"{BASE_URL}/v2/history/candles"
             params = {
                 'symbol': sym,
-                'resolution': '1h',
+                'resolution': '5m',
                 'start': start_ts,
                 'end': end_ts
             }
