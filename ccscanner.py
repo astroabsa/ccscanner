@@ -12,10 +12,10 @@ st.set_page_config(page_title="Absa's Delta India Scanner", layout="wide")
 # --- 2. GLOBAL SETTINGS ---
 # Delta India Symbols 
 CRYPTO_PAIRS = [
-    'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 
-    'DOGEUSDT', 'ADAUSDT', 'AVAXUSDT', 'LINKUSDT', 'DOTUSDT', 
-    'MATICUSDT', 'LTCUSDT', 'ATOMUSDT', 'NEARUSDT', 'UNIUSDT', 
-    'BCHUSDT', 'ETCUSDT', 'FILUSDT', 'APTUSDT', 'ARBUSDT'
+    'BTCUSDT.P', 'ETHUSDT.P', 'SOLUSDT.P', 'BNBUSDT.P', 'XRPUSDT.P', 
+    'DOGEUSDT.P', 'ADAUSDT.P', 'AVAXUSDT.P', 'LINKUSDT.P', 'DOTUSDT.P', 
+    'MATICUSDT.P', 'LTCUSDT.P', 'ATOMUSDT.P', 'NEARUSDT.P', 'UNIUSDT.P', 
+    'BCHUSDT.P', 'ETCUSDT.P', 'FILUSDT.P', 'APTUSDT.P', 'ARBUSDT.P'
 ]
 
 # Initialize Session State
