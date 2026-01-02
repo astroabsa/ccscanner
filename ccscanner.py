@@ -56,9 +56,9 @@ if st.sidebar.button("Log out"):
 
 # Sidebar Filters
 st.sidebar.header("Filter Settings")
-rsi_min = st.sidebar.slider("Min RSI (Bull)", 0, 100, 50)
-rsi_max = st.sidebar.slider("Max RSI (Bear)", 0, 100, 50)
-adx_min = st.sidebar.slider("Min ADX", 0, 50, 15)
+rsi_min = st.sidebar.slider("Min RSI (Bull)", 0, 100, 60)
+rsi_max = st.sidebar.slider("Max RSI (Bear)", 0, 100, 40)
+adx_min = st.sidebar.slider("Min ADX", 0, 50, 20)
 
 def get_sentiment(p_chg, oi_chg):
     if p_chg > 0 and oi_chg > 0: return "Long Buildup 🚀"
