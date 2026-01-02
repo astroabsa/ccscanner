@@ -3,7 +3,7 @@ import requests
 import pandas as pd
 import pandas_ta as ta
 import pytz
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 
 # --- 1. APP CONFIGURATION ---
@@ -12,7 +12,7 @@ st.set_page_config(page_title="Absa's Delta India Scanner", layout="wide")
 # --- 2. GLOBAL SETTINGS ---
 BASE_URL = "https://api.india.delta.exchange"
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 
 if "oi_cache" not in st.session_state:
@@ -20,7 +20,7 @@ if "oi_cache" not in st.session_state:
 
 # --- 3. AUTHENTICATION ---
 def authenticate_user(user_in, pw_in):
-    return True # Bypass for testing
+    return True # Bypass for now
 
 if "authenticated" not in st.session_state:
     st.session_state["authenticated"] = False
@@ -37,7 +37,7 @@ if not st.session_state["authenticated"]:
     st.stop()
 
 # --- 4. MAIN APPLICATION ---
-st.title("🚀 Absa's Delta India Scanner (Diagnostic Mode)")
+st.title("🚀 Absa's Delta India Scanner (Chart API Mode)")
 if st.sidebar.button("Log out"):
     st.session_state["authenticated"] = False
     st.rerun()
@@ -46,7 +46,7 @@ if st.sidebar.button("Log out"):
 st.sidebar.header("Filter Settings")
 rsi_min = st.sidebar.slider("Min RSI (Bull)", 0, 100, 50)
 rsi_max = st.sidebar.slider("Max RSI (Bear)", 0, 100, 50)
-adx_min = st.sidebar.slider("Min ADX", 0, 50, 10)
+adx_min = st.sidebar.slider("Min ADX", 0, 50, 15)
 
 def get_sentiment(p_chg, oi_chg):
     if p_chg > 0 and oi_chg > 0: return "Long Buildup 🚀"
@@ -59,12 +59,11 @@ def get_sentiment(p_chg, oi_chg):
 def fetch_top_pairs():
     try:
         resp = requests.get(f"{BASE_URL}/v2/tickers", headers=HEADERS)
-        if resp.status_code != 200: 
-            st.error(f"Ticker API Failed: {resp.status_code}")
-            return []
+        if resp.status_code != 200: return []
         
         tickers = resp.json().get('result', [])
-        valid = [t for t in tickers if 'USD' in t['symbol'] and t.get('product_id')]
+        # Strict Filter: Must have 'USD' in symbol
+        valid = [t for t in tickers if 'USD' in t['symbol']]
         # Sort by Turnover
         valid.sort(key=lambda x: float(x.get('turnover', 0) or 0), reverse=True)
         return valid[:30]
@@ -83,7 +82,6 @@ def render_dashboard(top_pairs):
     if btc:
         p = float(btc.get('close', 0))
         pct = float(btc.get('mark_change_24h', 0) or 0)
-        # Auto-scale decimal percent
         if abs(pct) < 1.0 and pct != 0: pct *= 100
         
         col1.metric("BTC", f"${p:,.2f}", f"{pct:.2f}%")
@@ -117,17 +115,20 @@ def refreshable_data_tables():
     
     bullish, bearish = [], []
     
-    # --- DEBUG SECTION ---
-    with st.expander("🕵️ Live Debug Report (First 3 Pairs)", expanded=True):
-        st.write("Checking API connectivity for history...")
+    # Debugging
+    with st.expander("🕵️ Live Debug (First 3 Pairs)", expanded=True):
         debug_cols = st.columns(3)
     
     progress_bar = st.progress(0, text="Scanning active pairs...")
     
+    # Calculate Timestamps for Chart API
+    now = datetime.now(pytz.UTC)
+    ts_end = int(now.timestamp())
+    ts_start = int((now - timedelta(hours=60)).timestamp()) # 60 hours back
+    
     for i, tick in enumerate(top_pairs):
         try:
             sym = tick['symbol']
-            pid = tick['product_id']
             ltp = float(tick.get('close', 0))
             
             raw_pct = float(tick.get('mark_change_24h', 0))
@@ -138,34 +139,27 @@ def refreshable_data_tables():
             oi_chg_pct = ((curr_oi - prev_oi) / prev_oi * 100) if prev_oi > 0 else 0
             st.session_state.oi_cache[sym] = curr_oi
             
-            # --- HISTORY FETCH (Robust Mode) ---
-            # Try 'resolution=60' (minutes) first
-            hist_url = f"{BASE_URL}/v2/history/candles?product_id={pid}&resolution=60&limit=60"
-            resp = requests.get(hist_url, headers=HEADERS, timeout=4)
+            # --- NEW STRATEGY: CHART HISTORY ENDPOINT ---
+            # Using /chart/history with time range
+            chart_url = f"{BASE_URL}/v2/chart/history?symbol={sym}&resolution=60&from={ts_start}&to={ts_end}"
+            resp = requests.get(chart_url, headers=HEADERS, timeout=4)
             
             history = []
             status_msg = f"Status {resp.status_code}"
             
             if resp.status_code == 200:
                 history = resp.json().get('result', [])
-            else:
-                # Fallback: Try '1h' if '60' failed
-                hist_url_fb = f"{BASE_URL}/v2/history/candles?product_id={pid}&resolution=1h&limit=60"
-                resp = requests.get(hist_url_fb, headers=HEADERS, timeout=4)
-                if resp.status_code == 200:
-                    history = resp.json().get('result', [])
-                    status_msg = "Status 200 (Fallback 1h)"
             
-            # --- DEBUG PRINT FOR FIRST 3 ITEMS ---
+            # Debug Print
             if i < 3:
                 with debug_cols[i]:
                     st.info(f"**{sym}**\n\nAPI: {status_msg}\n\nCandles: {len(history)}")
 
             if history and len(history) > 30:
                 df = pd.DataFrame(history)
-                # Normalize Columns (handle lowercase or uppercase)
-                df.columns = [c.lower() for c in df.columns]
-                df = df.rename(columns={'close': 'Close', 'high': 'High', 'low': 'Low'})
+                # Chart API returns: time, open, high, low, close, volume
+                # Ensure correct naming
+                df = df.rename(columns={'close': 'Close', 'high': 'High', 'low': 'Low', 'open': 'Open'})
                 
                 df['Close'] = df['Close'].astype(float)
                 df['High'] = df['High'].astype(float)
@@ -194,7 +188,7 @@ def refreshable_data_tables():
                     "Sentiment": sentiment
                 }
                 
-                # Check Filters
+                # Filters
                 if p_change > 0:
                     if curr_rsi > rsi_min and curr_adx > adx_min:
                         bullish.append(row)
@@ -202,7 +196,6 @@ def refreshable_data_tables():
                     if curr_rsi < rsi_max and curr_adx > adx_min:
                         bearish.append(row)
                         
-            # Polite Delay
             time.sleep(0.05)
             progress_bar.progress((i + 1) / len(top_pairs))
             
@@ -223,7 +216,7 @@ def refreshable_data_tables():
             st.dataframe(pd.DataFrame(bullish).sort_values(by="Mom %", ascending=False).head(10), 
                          use_container_width=True, hide_index=True, column_config=column_config)
         else:
-            st.info("No bullish action.")
+            st.info("No bullish action matching filters.")
             
     with c2:
         st.error(f"🔴 ACTIVE BEARS")
@@ -231,7 +224,7 @@ def refreshable_data_tables():
             st.dataframe(pd.DataFrame(bearish).sort_values(by="Mom %", ascending=True).head(10), 
                          use_container_width=True, hide_index=True, column_config=column_config)
         else:
-            st.info("No bearish action.")
+            st.info("No bearish action matching filters.")
 
     ist_time = datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S')
     st.write(f"🕒 **Last Data Sync:** {ist_time} IST")
