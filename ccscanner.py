@@ -15,7 +15,7 @@ HEADERS = {
 
 # --- 2. HARDCODED SETTINGS ---
 # Filters fixed as per request
-RSI_BULL_MIN = 60
+RSI_BULL_MIN = 65
 RSI_BEAR_MAX = 40
 ADX_MIN = 20
 
@@ -29,7 +29,7 @@ def authenticate_user(user_in, pw_in):
         csv_url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSEan21a9IVnkdmTFP2Q9O_ILI3waF52lFWQ5RTDtXDZ5MI4_yTQgFYcCXN5HxgkCxuESi5Dwe9iROB/pub?gid=0&single=true&output=csv"
         
         # Bypass login for testing (Remove this line to enforce login)
-        return True 
+        # return True 
         
         df = pd.read_csv(csv_url)
         df['username'] = df['username'].astype(str).str.strip().str.lower()
