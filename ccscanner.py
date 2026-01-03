@@ -7,15 +7,14 @@ from datetime import datetime, timedelta
 import time
 
 # --- 1. APP CONFIGURATION ---
-st.set_page_config(page_title="Absa's Delta India Scalper", layout="wide")
+st.set_page_config(page_title="Absa's Delta India Precision Scanner", layout="wide")
 BASE_URL = "https://api.india.delta.exchange"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 
 # --- 2. HARDCODED SETTINGS ---
-# Filters fixed as per request
-RSI_BULL_MIN = 65
+RSI_BULL_MIN = 60
 RSI_BEAR_MAX = 40
 ADX_MIN = 20
 
@@ -39,6 +38,7 @@ def authenticate_user(user_in, pw_in):
         return not match.empty
     except Exception:
         return True
+e 
 
 if "authenticated" not in st.session_state:
     st.session_state["authenticated"] = False
@@ -55,12 +55,11 @@ if not st.session_state["authenticated"]:
     st.stop()
 
 # --- 4. MAIN APP LAYOUT ---
-st.title("🚀 Absa's Delta India Scalper")
+st.title("🚀 Absa's Delta India Precision Scanner")
 if st.sidebar.button("Log out"):
     st.session_state["authenticated"] = False
     st.rerun()
 
-# Timeframe Selector (Kept this as it's useful)
 st.sidebar.header("⏱️ Timeframe")
 tf_label = st.sidebar.selectbox(
     "Candle Size",
@@ -94,13 +93,11 @@ def fetch_tickers():
     return []
 
 # --- 6. FRAGMENT A: FAST DASHBOARD (1 Second Refresh) ---
-@st.fragment(run_every=30)
+@st.fragment(run_every=1)
 def live_dashboard():
-    # Fetch just the tickers for price updates
     tickers = fetch_tickers()
     if not tickers: return
 
-    # Find BTC and ETH
     btc = next((t for t in tickers if 'BTC' in t['symbol'] and 'USD' in t['symbol']), None)
     eth = next((t for t in tickers if 'ETH' in t['symbol'] and 'USD' in t['symbol']), None)
 
@@ -111,13 +108,8 @@ def live_dashboard():
         pct = float(btc.get('mark_change_24h', 0) or 0)
         if abs(pct) < 1.0 and pct != 0: pct *= 100
         
-        # Color Logic
-        color = "normal"
-        if pct > 0: color = "normal" 
-        
         col1.metric("BTC", f"${p:,.2f}", f"{pct:.2f}%")
         
-        # Bias Display
         bias, b_color = ("SIDEWAYS ↔️", "gray")
         if pct > 0.5: bias, b_color = ("BULLISH 🚀", "green")
         elif pct < -0.5: bias, b_color = ("BEARISH 📉", "red")
@@ -134,14 +126,12 @@ def live_dashboard():
         if abs(pct) < 1.0 and pct != 0: pct *= 100
         col2.metric("ETH", f"${p:,.2f}", f"{pct:.2f}%")
 
-# Run the dashboard fragment
 live_dashboard()
 st.markdown("---")
 
-# --- 7. FRAGMENT B: SCANNER TABLE (3 Minute Refresh) ---
+# --- 7. FRAGMENT B: SCANNER ENGINE (3 Minute Refresh) ---
 @st.fragment(run_every=180)
 def scanner_engine():
-    # 1. Get Top Pairs
     tickers = fetch_tickers()
     valid = [t for t in tickers if 'USD' in t['symbol']]
     valid.sort(key=lambda x: float(x.get('turnover', 0) or 0), reverse=True)
@@ -154,19 +144,23 @@ def scanner_engine():
     bullish, bearish = [], []
     progress_bar = st.progress(0, text=f"Scanning market ({tf_label})...")
     
-    # Calculate Time Range
+    # --- MAXIMUM LOOKBACK CALCULATION ---
+    # To fix the "Warm-up" issue, we request ~1000+ candles.
     now = datetime.now(pytz.UTC)
     end_ts = int(now.timestamp())
     
-    # Lookback logic
+    # 5m: 5 days = ~1440 candles
+    # 15m: 15 days = ~1440 candles
+    # 1h: 60 days = ~1440 candles
+    # 4h: 200 days = ~1200 candles
     if selected_res == '5m':
-        start_ts = int((now - timedelta(days=3)).timestamp())
+        start_ts = int((now - timedelta(days=5)).timestamp())
     elif selected_res == '15m':
-        start_ts = int((now - timedelta(days=7)).timestamp())
+        start_ts = int((now - timedelta(days=15)).timestamp())
     elif selected_res == '1h':
-        start_ts = int((now - timedelta(days=30)).timestamp())
-    else:
         start_ts = int((now - timedelta(days=60)).timestamp())
+    else:
+        start_ts = int((now - timedelta(days=200)).timestamp())
     
     for i, tick in enumerate(top_pairs):
         try:
@@ -192,20 +186,20 @@ def scanner_engine():
             resp = requests.get(url, params=params, headers=HEADERS, timeout=2)
             history = resp.json().get('result', []) if resp.status_code == 200 else []
             
-            if len(history) > 20:
+            if len(history) > 50: # Ensure plenty of data
                 df = pd.DataFrame(history)
                 df = df.rename(columns={'close': 'Close', 'high': 'High', 'low': 'Low', 'open': 'Open'})
                 df[['Close', 'High', 'Low']] = df[['Close', 'High', 'Low']].astype(float)
                 
-                # Indicators (Fixed Settings)
-                # Note: RSI Length 14 is standard. If you want faster for 5m, we can hardcode 9.
-                # Let's stick to 14 standard, or 9 if you prefer scalping. 
-                # I'll use 14 as it's the most common default, but we can change to 9 easily.
+                # --- INDICATOR CALCULATION ---
+                # RSI 14 & ADX 14 (Standard)
+                # Calculating on a larger dataset ensures the values converge with TradingView
                 df['RSI'] = ta.rsi(df['Close'], length=14) 
                 adx_df = ta.adx(df['High'], df['Low'], df['Close'], length=14)
                 df['EMA_5'] = ta.ema(df['Close'], length=5)
                 
                 curr_rsi = df['RSI'].iloc[-1]
+                # Note: pandas_ta usually names column 'ADX_14'
                 curr_adx = adx_df['ADX_14'].iloc[-1]
                 ema_5 = df['EMA_5'].iloc[-1]
                 momentum_pct = round(((ltp - ema_5) / ema_5) * 100, 2)
@@ -219,15 +213,13 @@ def scanner_engine():
                     "ADX": round(curr_adx, 1), "Sentiment": sentiment
                 }
                 
-                # --- FIXED FILTERS ---
-                # RSI > 60 and ADX > 20 (Bull)
+                # --- FILTER LOGIC ---
                 if p_change > 0:
                     if curr_rsi > RSI_BULL_MIN and curr_adx > ADX_MIN: bullish.append(row)
-                # RSI < 40 and ADX > 20 (Bear)
                 elif p_change < 0:
                     if curr_rsi < RSI_BEAR_MAX and curr_adx > ADX_MIN: bearish.append(row)
             
-            time.sleep(0.01) # fast pacing
+            time.sleep(0.01)
             progress_bar.progress((i + 1) / len(top_pairs))
         except: continue
             
@@ -252,5 +244,4 @@ def scanner_engine():
     st.write(f"🕒 **Scanner Updated:** {ist_time} IST (Next update in 3 mins)")
     st.markdown("<div style='text-align: center; color: grey;'>Powered by : i-Tech World</div>", unsafe_allow_html=True)
 
-# Run the scanner fragment
 scanner_engine()
