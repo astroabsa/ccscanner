@@ -38,7 +38,6 @@ def authenticate_user(user_in, pw_in):
         return not match.empty
     except Exception:
         return True
-e 
 
 if "authenticated" not in st.session_state:
     st.session_state["authenticated"] = False
